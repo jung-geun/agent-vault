@@ -1,0 +1,24 @@
+{
+  "name": "agent-vault-skill",
+  "version": "1.0.0",
+  "description": "Centralized Obsidian LLM Wiki & Agent Memory System for OMP",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check bin/vault-cli.mjs && node --check bin/normalize-imported-links.mjs && node --check lib/vault-core.mjs && node --check lib/migration.mjs && node --check test/migration.test.mjs && node --check test/cli.test.mjs",
+    "test": "node --test"
+  },
+  "bin": {
+    "vault-cli": "./bin/vault-cli.mjs"
+  },
+  "keywords": [
+    "omp",
+    "skill",
+    "obsidian",
+    "llm-wiki",
+    "openspec",
+    "memory"
+  ]
+}

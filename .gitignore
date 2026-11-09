@@ -1,0 +1,44 @@
+# Local vaults and OMP configuration
+.vault/
+vault/
+.obsidian/
+.vaultrc
+.omp/vault.json
+
+# Environment and credential files
+.env
+.env.*
+!.env.example
+.secrets/
+secrets.*
+credentials.*
+credential.*
+.npmrc
+.netrc
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Cloud and infrastructure credentials
+clouds.yaml
+admin-openrc
+openrc
+k3s.yaml
+*.tfstate
+*.tfstate.*
+id_rsa*
+id_ed25519*
+
+# Local tooling output
+node_modules/
+coverage/
+dist/
+build/
+*.log
+.DS_Store
+
+# Local migration helpers and project fact modules
+bin/build-project-index.mjs
+lib/curate.mjs
+lib/facts-*.mjs

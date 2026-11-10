@@ -313,7 +313,7 @@ function writeLine(obj) {
 
 export async function serveStdio(input = process.stdin) {
   let buffer = "";
-  const pending = new Set();
+  let queue = Promise.resolve();
   const dispatch = (line) => {
     if (!line.trim()) return;
     let parsed;
@@ -323,14 +323,16 @@ export async function serveStdio(input = process.stdin) {
       writeLine(fail(null, -32700, "Parse error"));
       return;
     }
-    const task = (async () => {
+    queue = queue.then(async () => {
       const batch = Array.isArray(parsed) ? parsed : [parsed];
-      const replies = (await Promise.all(batch.map(handleMessage))).filter(Boolean);
+      const replies = [];
+      for (const message of batch) {
+        const reply = await handleMessage(message);
+        if (reply) replies.push(reply);
+      }
       if (replies.length === 0) return;
       writeLine(Array.isArray(parsed) ? replies : replies[0]);
-    })().catch((error) => process.stderr.write(`[agent-vault-mcp] ${error.stack ?? error}\n`));
-    pending.add(task);
-    task.finally(() => pending.delete(task));
+    }).catch((error) => process.stderr.write(`[agent-vault-mcp] ${error.stack ?? error}\n`));
   };
   input.setEncoding("utf8");
   for await (const chunk of input) {
@@ -342,7 +344,7 @@ export async function serveStdio(input = process.stdin) {
     }
   }
   if (buffer.trim()) dispatch(buffer);
-  await Promise.all(pending);
+  await queue;
 }
 
 function flag(args, name) {

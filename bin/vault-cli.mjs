@@ -99,13 +99,14 @@ async function registerMcpServer(configPath, entry) {
   }
   config.mcpServers ??= {};
   const current = config.mcpServers[MCP_SERVER_NAME];
-  if (current !== undefined) {
-    return JSON.stringify(current) === JSON.stringify(entry) ? "already current" : "preserved existing entry that differs";
-  }
+  if (current !== undefined && JSON.stringify(current) === JSON.stringify(entry)) return "already current";
+  // An entry whose server path is our installed copy is ours: refresh it (for example after a Node upgrade).
+  const ownedByUs = Array.isArray(current?.args) && String(current.args[0]).replaceAll("\\", "/").endsWith("skills/agent-vault/bin/vault-mcp.mjs");
+  if (current !== undefined && !ownedByUs) return "preserved existing entry that differs";
   config.mcpServers[MCP_SERVER_NAME] = entry;
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`, mode);
-  return "registered";
+  return current === undefined ? "registered" : "updated";
 }
 
 async function installSkillFiles(sourceDir, targetDir) {
@@ -237,7 +238,7 @@ try {
         const mcpConfig = path.resolve(os.homedir(), ".omp/agent/mcp.json");
         const mcpResult = await registerMcpServer(mcpConfig, {
           type: "stdio",
-          command: process.execPath,
+          command: "node",
           args: [serverPath],
           enabled: true,
         });

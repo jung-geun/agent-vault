@@ -174,3 +174,54 @@ test("stdout carries only protocol messages; diagnostics stay on stderr", async 
   }
   assert.match(server.stderr(), /vault=/);
 });
+
+test("every tool works end-to-end when calls are awaited in order", async (t) => {
+  const { root, vault, repo } = await fixture(t);
+  const betaRepo = path.join(root, "beta-repo");
+  await mkdir(betaRepo);
+  const server = await startServer(t, vault, repo);
+
+  const scaffold = await server.call("project_scaffold", { project: "beta", title: "Beta", sourceDir: "beta-repo", classification: "app", git: "no remote", stack: "Node" });
+  assert.equal(scaffold.isError, false);
+  assert.equal(scaffold.body.registered, true);
+
+  const resolved = await server.call("project_resolve", { cwd: betaRepo });
+  assert.equal(resolved.body.status, "resolved");
+  assert.equal(resolved.body.projectId, "beta");
+
+  const agentWrite = await server.call("agent_memory_write", { project: "beta", role: "builder", title: "Build order", content: "Run check before test." });
+  assert.equal(agentWrite.isError, false);
+  assert.equal(agentWrite.body.path, "projects/beta/agents/builder/memory.md");
+
+  const agentRead = await server.call("agent_memory_read", { project: "beta", role: "builder" });
+  assert.match(agentRead.body.content, /Run check before test\./);
+
+  const handoff = await server.call("agent_handoff", { project: "beta", slug: "review-build", from: "builder", to: "reviewer", title: "Review build", content: "Check the order note." });
+  assert.equal(handoff.isError, false);
+  assert.match(handoff.body.path, /^projects\/beta\/agents\/handoffs\/\d{4}-\d{2}-\d{2}-task-review-build\.md$/);
+
+  const log = await server.call("log_write", { project: "beta", kind: "qa", slug: "smoke", title: "Smoke", content: "Ran npm test: pass." });
+  assert.equal(log.isError, false);
+  assert.match(log.body.path, /^projects\/beta\/logs\/\d{4}-\d{2}-\d{2}-qa-smoke\.md$/);
+
+  const listed = await server.call("memory_list", { scope: "project", project: "beta" });
+  const paths = listed.body.notes.map((n) => n.path);
+  assert.ok(paths.includes("projects/beta/agents/builder/memory.md"));
+  assert.ok(paths.includes(log.body.path));
+
+  const projects = await server.call("project_list", {});
+  const beta = projects.body.projects.find((p) => p.id === "beta");
+  assert.equal(beta.registered, true);
+  assert.equal(beta.sourceDir, "beta-repo");
+});
+
+test("pipelined requests are answered in order, so dependent calls see earlier effects", async (t) => {
+  const { root, vault, repo } = await fixture(t);
+  await mkdir(path.join(root, "gamma-repo"));
+  const server = await startServer(t, vault, repo);
+  const first = server.request("tools/call", { name: "project_scaffold", arguments: { project: "gamma", sourceDir: "gamma-repo" } });
+  const second = server.request("tools/call", { name: "project_resolve", arguments: { cwd: path.join(root, "gamma-repo") } });
+  const [scaffold, resolved] = await Promise.all([first, second]);
+  assert.notEqual(scaffold.result.isError, true);
+  assert.equal(JSON.parse(resolved.result.content[0].text).status, "resolved");
+});

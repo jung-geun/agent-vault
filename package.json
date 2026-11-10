@@ -7,11 +7,12 @@
     "node": ">=20"
   },
   "scripts": {
-    "check": "node --check bin/vault-cli.mjs && node --check bin/normalize-imported-links.mjs && node --check lib/vault-core.mjs && node --check lib/migration.mjs && node --check test/migration.test.mjs && node --check test/cli.test.mjs",
+    "check": "node --check bin/vault-cli.mjs && node --check bin/vault-mcp.mjs && node --check bin/normalize-imported-links.mjs && node --check lib/vault-core.mjs && node --check lib/migration.mjs && node --check lib/memory-store.mjs && node --check test/migration.test.mjs && node --check test/cli.test.mjs && node --check test/memory-store.test.mjs && node --check test/mcp.test.mjs",
     "test": "node --test"
   },
   "bin": {
-    "vault-cli": "./bin/vault-cli.mjs"
+    "vault-cli": "./bin/vault-cli.mjs",
+    "vault-mcp": "./bin/vault-mcp.mjs"
   },
   "keywords": [
     "omp",

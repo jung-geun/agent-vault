@@ -4,7 +4,8 @@ import path from "node:path";
 import process from "node:process";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { mkdir, cp, readFile, writeFile, lstat } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, cp, readFile, writeFile, lstat, rename, stat } from "node:fs/promises";
 import { resolveVaultPath, initVault, scaffoldProject, getVaultStatus } from "../lib/vault-core.mjs";
 import { migrateFromWiki, migrateFromProjectRepo } from "../lib/migration.mjs";
 
@@ -45,20 +46,66 @@ const getFlag = (name) => {
   return idx >= 0 ? args[idx + 1] : undefined;
 };
 
-async function installRuleWithoutOverwrite(sourcePath, targetPath) {
+// SHA-256 of rule files shipped before the tool-based rule. Only these copies are upgraded in place.
+const LEGACY_RULE_SHA256 = new Set(["99420e12daa5a61c72ae963495ce3f9084f680489020a64f51f78b6b70f23e19"]);
+const MCP_SERVER_NAME = "agent-vault";
+
+async function writeAtomic(targetPath, data, mode) {
+  const temp = `${targetPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(temp, data, { mode });
+  await rename(temp, targetPath);
+}
+
+async function installRule(sourcePath, targetPath) {
   const source = await readFile(sourcePath);
   await mkdir(path.dirname(targetPath), { recursive: true });
+  let existing;
   try {
+    const destinationStat = await lstat(targetPath);
+    if (!destinationStat.isFile()) return "preserved non-regular destination";
+    existing = await readFile(targetPath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (existing === undefined) {
     await writeFile(targetPath, source, { flag: "wx" });
     return "installed";
-  } catch (error) {
-    if (error.code !== "EEXIST") throw error;
   }
+  if (existing.equals(source)) return "already current";
+  if (LEGACY_RULE_SHA256.has(createHash("sha256").update(existing).digest("hex"))) {
+    await writeAtomic(targetPath, source, 0o644);
+    return "updated from legacy version";
+  }
+  return "preserved existing file with different content";
+}
 
-  const destinationStat = await lstat(targetPath);
-  if (!destinationStat.isFile()) return "preserved non-regular destination";
-  const existing = await readFile(targetPath);
-  return existing.equals(source) ? "already current" : "preserved existing file with different content";
+// Adds the agent-vault MCP entry to the OMP user MCP config. Other servers and keys are kept as-is.
+async function registerMcpServer(configPath, entry) {
+  let config = { mcpServers: {} };
+  let mode = 0o600;
+  let raw;
+  try {
+    raw = await readFile(configPath, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (raw !== undefined) {
+    try {
+      config = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`${configPath} is not valid JSON (${error.message}); fix it before installing the MCP server.`);
+    }
+    mode = (await stat(configPath)).mode & 0o777;
+  }
+  config.mcpServers ??= {};
+  const current = config.mcpServers[MCP_SERVER_NAME];
+  if (current !== undefined) {
+    return JSON.stringify(current) === JSON.stringify(entry) ? "already current" : "preserved existing entry that differs";
+  }
+  config.mcpServers[MCP_SERVER_NAME] = entry;
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`, mode);
+  return "registered";
 }
 
 async function installSkillFiles(sourceDir, targetDir) {
@@ -179,11 +226,25 @@ try {
 
         const ruleSource = path.join(packageRoot, "integrations", "omp", "agent-vault.rule.md");
         const ruleTarget = path.resolve(os.homedir(), ".agents/rules/agent-vault.md");
-        const ruleResult = await installRuleWithoutOverwrite(ruleSource, ruleTarget);
+        const ruleResult = await installRule(ruleSource, ruleTarget);
         if (ruleResult.startsWith("preserved")) {
           console.warn(`[WARN] ${ruleTarget}: ${ruleResult}; review and merge manually.`);
         } else {
           console.log(`[OK] OMP user rule ${ruleResult}: ${ruleTarget}`);
+        }
+
+        const serverPath = path.resolve(os.homedir(), ".omp/agent/skills/agent-vault/bin/vault-mcp.mjs");
+        const mcpConfig = path.resolve(os.homedir(), ".omp/agent/mcp.json");
+        const mcpResult = await registerMcpServer(mcpConfig, {
+          type: "stdio",
+          command: process.execPath,
+          args: [serverPath],
+          enabled: true,
+        });
+        if (mcpResult.startsWith("preserved")) {
+          console.warn(`[WARN] ${mcpConfig}: ${MCP_SERVER_NAME} ${mcpResult}; review and merge manually.`);
+        } else {
+          console.log(`[OK] MCP server ${MCP_SERVER_NAME} ${mcpResult}: ${mcpConfig}`);
         }
       }
       break;

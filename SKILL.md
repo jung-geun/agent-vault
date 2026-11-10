@@ -46,24 +46,30 @@ The vault location is dynamically resolved in order:
 
 ## 3. Workflow for OMP Agents
 
-### Step 1: Session Initialization (Load Context)
-1. Read `user/profile.md` and `user/coding-standards.md` from the resolved vault.
-2. Resolve the repository or worktree root for the current `cwd`. Find the matching `Source directory` in `_meta/projects-index.md`; use Git remote and branch to disambiguate snapshots and worktrees with the same remote.
-3. If the directory is not a stable project or repository (for example, a temporary directory), use user and shared knowledge only; do not scaffold a project.
-4. For a stable new repository absent from the registry, choose a unique documented project ID, scaffold it, and record the source-directory mapping.
-5. Read the project index, relevant specs and recent QA logs, then the current agent role's memory. Main agent defaults to `coordinator`; investigator, builder, reviewer, and QA agents use their matching roles.
+### Tools (MCP server `agent-vault`)
 
-### Step 2: Spec-Driven Execution (OpenSpec)
+The MCP server `bin/vault-mcp.mjs` is registered by `install --global`. Use these tools instead of editing vault files by hand. Each tool returns structured JSON; refusals return `error` codes such as `path_escape`, `secret_detected`, `hash_mismatch`, `append_only`, `project_ambiguous`.
+
+### Step 1: Session Start
+- Call `vault_context` with the working directory. It returns the user profile, coding standards, the resolved project index, role memory, and recent logs.
+- When `project_resolve` returns `ambiguous` or `unregistered`, ask the user or pass `project` explicitly. Never guess the project.
+- For a stable new repository, call `project_scaffold` once. It creates the workspace and registers the source directory. Do not scaffold temporary directories.
+
+### Step 2: Find Before Claiming
+- `memory_search` ranks notes by title, path, and term matches across the resolved project, `user/`, and `shared/`. Cite the returned paths.
+- `memory_read` returns `sha256`. Pass it as `expectedHash` to `memory_write` with mode `replace`; a stale hash is refused.
+
+### Step 3: Persist
+- Durable facts: `memory_write` (mode `create` or `append`) under `shared/knowledge/` or `projects/<id>/`. `user/` accepts append only.
+- Role knowledge: `agent_memory_write` appends a dated entry to `projects/<id>/agents/<role>/memory.md`.
+- Work between roles: `agent_handoff` creates an immutable file `projects/<id>/agents/handoffs/YYYY-MM-DD-task-<slug>.md`.
+- Evidence: `log_write` records a dated log only after a check actually ran. Include the command, result, scope, and limits.
+
+### OpenSpec Changes
 - For new features, architectural refactors, or contract changes:
   1. Draft change proposal in `projects/<project-id>/changes/<change-slug>/` with `proposal.md`, `design.md`, `tasks.md`.
   2. Implement changes in codebase and run verification tests.
   3. Promote verified specifications to `projects/<project-id>/specs/` and archive change package to `changes/archive/`.
-
-### Step 3: State Persist & Inter-Agent Handoff
-- Update role memory with new operational facts or build invariants:
-  `projects/<project-id>/agents/<role>/memory.md`.
-- For inter-agent transfers, write an append-only file:
-  `projects/<project-id>/agents/handoffs/YYYY-MM-DD-task-<hash>.md`.
 
 ## 4. Evidence & Instruction Boundary
 
@@ -80,5 +86,6 @@ Run the CLI from the repository or installed skill directory: `node <agent-vault
 - `migrate --from-wiki <path> [--profile-source <relative-file>]`: Import selected profile, project notes, and OpenSpec specs without modifying the source.
 - `migrate --from-repo <path> [--project <id>]`: Import OpenSpec specs and supported memory files.
 - After wiki migration, check imported links with `node <agent-vault>/bin/normalize-imported-links.mjs --check`; use `--write` to apply safe rewrites.
-- `install --global`: Install skill copies to native OMP and `~/.agents/skills`; add the OMP always-apply rule without overwriting different existing content.
+- `install --global`: Install skill copies to native OMP and `~/.agents/skills`, add the always-apply rule, and register the `agent-vault` MCP server in `~/.omp/agent/mcp.json`. A different existing entry or rule is preserved and reported for manual merge.
 - `install --local`: Install the skill to `./.omp/skills/agent-vault` without changing global rules.
+- MCP tools: `vault_context`, `memory_search`, `memory_read`, `memory_list`, `memory_write`, `project_resolve`, `project_list`, `project_scaffold`, `agent_memory_read`, `agent_memory_write`, `agent_handoff`, `log_write`.

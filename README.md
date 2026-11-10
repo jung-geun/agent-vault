@@ -27,7 +27,20 @@ node bin/vault-cli.mjs install --global
 omp skill list --json
 ```
 
-OMP는 스킬을 발견해도 자동으로 실행하지 않습니다. 전역 `alwaysApply` 규칙이 매 세션 `skill://agent-vault`와 사용자 프로필을 읽도록 요구합니다. `--no-rules` 또는 `--no-skills`를 명시하면 해당 연동은 비활성화됩니다.
+전역 `alwaysApply` 규칙은 매 세션 `vault_context` 도구를 호출하도록 요구합니다. 설치기는 MCP 서버 `agent-vault`를 `~/.omp/agent/mcp.json`에 등록합니다. 다른 서버와 키는 그대로 보존하며, 같은 이름의 다른 항목이 있으면 덮어쓰지 않고 경고합니다.
+
+등록되는 도구는 다음과 같습니다.
+
+| 목적 | 도구 |
+|---|---|
+| 세션 컨텍스트 | `vault_context` |
+| 검색·조회·목록 | `memory_search`, `memory_read`, `memory_list` |
+| 등록·갱신 | `memory_write` (`create`, `append`, `replace`; `replace`는 `expectedHash` 필요) |
+| 프로젝트 | `project_resolve`, `project_list`, `project_scaffold` |
+| 에이전트 | `agent_memory_read`, `agent_memory_write`, `agent_handoff` |
+| QA 기록 | `log_write` |
+
+도구는 경로 탈출, 심볼릭 링크, 자격 증명 패턴, 오래된 해시 쓰기를 거부합니다. 모호한 프로젝트는 추측하지 않고 후보만 반환합니다. 수동으로 MCP 서버를 실행하려면 `node bin/vault-mcp.mjs --path <vault>`를 사용합니다.
 
 기본 vault가 아직 없을 때 한 번 초기화합니다.
 

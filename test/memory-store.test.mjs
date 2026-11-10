@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,9 +11,14 @@ import {
   createProject,
   getContext,
   listProjects,
+  longTermWrite,
   readMemory,
   resolveProject,
   searchMemory,
+  shortMemoryRead,
+  shortMemoryWrite,
+  worktreeList,
+  worktreeRecord,
   writeHandoff,
   writeMemory,
 } from "../lib/memory-store.mjs";
@@ -221,4 +228,79 @@ test("registering a project creates the registry when the vault has none", async
   const index = await readFile(path.join(vault, "_meta", "projects-index.md"), "utf8");
   assert.match(index, /\| \[Beta\]\(\.\.\/projects\/beta\/index\.md\) \| beta-repo \| app \|/);
   assert.equal((await resolveProject(vault, { cwd: repo })).projectId, "beta");
+});
+
+const git = promisify(execFile);
+const commit = (dir) => git("git", ["-C", dir, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init"]);
+
+test("short-term memory is per project, replaced only with the hash that was read", async (t) => {
+  const { vault } = await fixture(t);
+  assert.equal((await shortMemoryRead(vault, { project: "alpha" })).exists, false);
+
+  const first = await shortMemoryWrite(vault, { project: "alpha", content: "Step 1 done." }, { now: NOW });
+  assert.equal(first.path, "projects/alpha/memory.md");
+  const read = await shortMemoryRead(vault, { project: "alpha" });
+  assert.equal(read.exists, true);
+  assert.match(read.content, /Step 1 done\./);
+
+  await assert.rejects(shortMemoryWrite(vault, { project: "alpha", content: "Step 2." }), { code: "hash_required" });
+  await assert.rejects(shortMemoryWrite(vault, { project: "alpha", content: "Step 2.", expectedHash: "0".repeat(64) }), { code: "hash_mismatch" });
+  const second = await shortMemoryWrite(vault, { project: "alpha", content: "Step 2.", expectedHash: read.sha256 }, { now: NOW });
+  assert.notEqual(second.sha256, read.sha256);
+  assert.match((await shortMemoryRead(vault, { project: "alpha" })).content, /Step 2\./);
+});
+
+test("long-term memory is dated, written once, and never replaced", async (t) => {
+  const { vault } = await fixture(t);
+  const written = await longTermWrite(vault, { project: "alpha", slug: "retry-policy", title: "Retry policy", content: "Backoff with jitter." }, { now: NOW });
+  assert.equal(written.path, "projects/alpha/long-term/2026-11-10-retry-policy.md");
+  await assert.rejects(longTermWrite(vault, { project: "alpha", slug: "retry-policy", title: "Again", content: "x" }, { now: NOW }), { code: "exists" });
+  const read = await readMemory(vault, { path: written.path });
+  await assert.rejects(
+    writeMemory(vault, { path: written.path, content: "rewritten", mode: "replace", expectedHash: read.sha256 }),
+    { code: "append_only" },
+  );
+  const other = await longTermWrite(vault, { project: "alpha", slug: "retry-policy", title: "Next day", content: "y" }, { now: new Date("2026-11-11T00:00:00Z") });
+  assert.equal(other.path, "projects/alpha/long-term/2026-11-11-retry-policy.md");
+});
+
+test("worktree records are kept per branch, and linked worktrees resolve to their project", async (t) => {
+  const { root, vault } = await fixture(t);
+  const repo = path.join(root, "alpha-repo");
+  await mkdir(repo);
+  await git("git", ["init", "-q", "-b", "feature/add-search", repo]);
+  await commit(repo);
+  const other = path.join(root, "some-other-checkout");
+  await git("git", ["-C", repo, "worktree", "add", "-q", "-b", "fix/retry", other]);
+
+  const first = await worktreeRecord(vault, { cwd: repo, kind: "instruction", slug: "add-search", title: "Add search", content: "User asked for full-text search." }, { now: NOW });
+  assert.equal(first.path, "projects/alpha/worktrees/feature-add-search/2026-11-10-instruction-add-search.md");
+  const note = await readMemory(vault, { path: first.path });
+  assert.match(note.content, /Branch: feature\/add-search/);
+  assert.doesNotMatch(note.content, new RegExp(root.replaceAll("/", "\\/")));
+
+  const second = await worktreeRecord(vault, { cwd: other, kind: "implementation", slug: "retry-fix", title: "Retry fix", content: "Added backoff." }, { now: NOW });
+  assert.equal(second.path, "projects/alpha/worktrees/fix-retry/2026-11-10-implementation-retry-fix.md");
+
+  const listed = await worktreeList(vault, { cwd: repo });
+  assert.deepEqual(listed.worktrees.map((w) => [w.key, w.records]), [["feature-add-search", 1], ["fix-retry", 1]]);
+
+  await assert.rejects(worktreeRecord(vault, { cwd: repo, kind: "gossip", slug: "x", title: "x", content: "x" }), { code: "invalid_kind" });
+});
+
+test("context carries short-term memory, recent long-term notes and the current worktree", async (t) => {
+  const { root, vault } = await fixture(t);
+  const repo = path.join(root, "alpha-repo");
+  await mkdir(repo);
+  await git("git", ["init", "-q", "-b", "feature/context", repo]);
+  await commit(repo);
+  await shortMemoryWrite(vault, { project: "alpha", content: "Resume at the parser." }, { now: NOW });
+  await longTermWrite(vault, { project: "alpha", slug: "parser-choice", title: "Parser choice", content: "Use the streaming parser." }, { now: NOW });
+  await worktreeRecord(vault, { cwd: repo, kind: "investigation", slug: "parser", title: "Parser check", content: "Compared two parsers." }, { now: NOW });
+
+  const context = await getContext(vault, { cwd: repo });
+  assert.match(context.shortTermMemory.content, /Resume at the parser\./);
+  assert.deepEqual(context.longTermRecent, ["projects/alpha/long-term/2026-11-10-parser-choice.md"]);
+  assert.equal(context.worktree.key, "feature-context");
+  assert.equal(context.worktree.records.length, 1);
 });

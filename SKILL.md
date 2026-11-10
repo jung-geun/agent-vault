@@ -60,6 +60,9 @@ The MCP server `bin/vault-mcp.mjs` is registered by `install --global`. Use thes
 - `memory_read` returns `sha256`. Pass it as `expectedHash` to `memory_write` with mode `replace`; a stale hash is refused.
 
 ### Step 3: Persist
+- Short-term memory: `short_memory_write` replaces `projects/<id>/memory.md`, the project's current working state (what is in progress, open questions, next steps). Read with `short_memory_read` and pass `expectedHash` when replacing.
+- Long-term memory: `long_memory_write` writes one dated note per call to `projects/<id>/long-term/YYYY-MM-DD-<slug>.md`. Long-term notes are never replaced; supersede them with a new dated note.
+- Worktree records: `worktree_record` stores, under `projects/<id>/worktrees/<branch-key>/`, dated records of kind `implementation` (what was built), `instruction` (each user instruction in that worktree), or `investigation` (what was looked into). `worktree_list` shows which worktrees have records. A linked worktree resolves to its main repository's project.
 - Durable facts: `memory_write` (mode `create` or `append`) under `shared/knowledge/` or `projects/<id>/`. `user/` accepts append only.
 - Role knowledge: `agent_memory_write` appends a dated entry to `projects/<id>/agents/<role>/memory.md`.
 - Work between roles: `agent_handoff` creates an immutable file `projects/<id>/agents/handoffs/YYYY-MM-DD-task-<slug>.md`.
@@ -88,4 +91,4 @@ Run the CLI from the repository or installed skill directory: `node <agent-vault
 - After wiki migration, check imported links with `node <agent-vault>/bin/normalize-imported-links.mjs --check`; use `--write` to apply safe rewrites.
 - `install --global`: Install skill copies to native OMP and `~/.agents/skills`, add the always-apply rule, and register the `agent-vault` MCP server in `~/.omp/agent/mcp.json`. A different existing entry or rule is preserved and reported for manual merge.
 - `install --local`: Install the skill to `./.omp/skills/agent-vault` without changing global rules.
-- MCP tools: `vault_context`, `memory_search`, `memory_read`, `memory_list`, `memory_write`, `project_resolve`, `project_list`, `project_scaffold`, `agent_memory_read`, `agent_memory_write`, `agent_handoff`, `log_write`.
+- MCP tools: `vault_context`, `memory_search`, `memory_read`, `memory_list`, `memory_write`, `short_memory_read`, `short_memory_write`, `long_memory_write`, `worktree_record`, `worktree_list`, `project_resolve`, `project_list`, `project_scaffold`, `agent_memory_read`, `agent_memory_write`, `agent_handoff`, `log_write`.

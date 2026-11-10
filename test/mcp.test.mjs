@@ -225,3 +225,43 @@ test("pipelined requests are answered in order, so dependent calls see earlier e
   assert.notEqual(scaffold.result.isError, true);
   assert.equal(JSON.parse(resolved.result.content[0].text).status, "resolved");
 });
+
+test("memory tiers and worktree records are advertised and work in order through the protocol", async (t) => {
+  const { vault, repo } = await fixture(t);
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const git = promisify(execFile);
+  await git("git", ["init", "-q", "-b", "feature/tiers", repo]);
+  await git("git", ["-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init"]);
+  const server = await startServer(t, vault, repo);
+
+  const listed = await server.request("tools/list", {});
+  const names = listed.result.tools.map((tool) => tool.name);
+  for (const name of ["short_memory_read", "short_memory_write", "long_memory_write", "worktree_record", "worktree_list"]) {
+    assert.ok(names.includes(name), `missing ${name}`);
+  }
+
+  const empty = await server.call("short_memory_read", {});
+  assert.equal(empty.body.exists, false);
+
+  const written = await server.call("short_memory_write", { content: "Next: wire the tiers." });
+  assert.equal(written.isError, false);
+  const current = await server.call("short_memory_read", {});
+  assert.equal(current.body.sha256, written.body.sha256);
+  const refused = await server.call("short_memory_write", { content: "Overwrite." });
+  assert.equal(refused.body.error, "hash_required");
+
+  const longTerm = await server.call("long_memory_write", { slug: "tiers", title: "Memory tiers", content: "Short-term is mutable; long-term is dated." });
+  assert.match(longTerm.body.path, /^projects\/alpha\/long-term\/\d{4}-\d{2}-\d{2}-tiers\.md$/);
+
+  const record = await server.call("worktree_record", { kind: "instruction", slug: "tiers", title: "Tiers request", content: "User asked for tiers." });
+  assert.equal(record.isError, false);
+  assert.match(record.body.path, /^projects\/alpha\/worktrees\/feature-tiers\/\d{4}-\d{2}-\d{2}-instruction-tiers\.md$/);
+
+  const worktrees = await server.call("worktree_list", {});
+  assert.deepEqual(worktrees.body.worktrees.map((w) => [w.key, w.records]), [["feature-tiers", 1]]);
+
+  const context = await server.call("vault_context", {});
+  assert.match(context.body.shortTermMemory.content, /wire the tiers/);
+  assert.equal(context.body.worktree.key, "feature-tiers");
+});

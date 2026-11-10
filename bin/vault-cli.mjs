@@ -47,7 +47,10 @@ const getFlag = (name) => {
 };
 
 // SHA-256 of rule files shipped before the tool-based rule. Only these copies are upgraded in place.
-const LEGACY_RULE_SHA256 = new Set(["99420e12daa5a61c72ae963495ce3f9084f680489020a64f51f78b6b70f23e19"]);
+const LEGACY_RULE_SHA256 = new Set([
+  "99420e12daa5a61c72ae963495ce3f9084f680489020a64f51f78b6b70f23e19", // direct-file rule
+  "2e1eb64d07bddc2434a2e2da6a6117907cb71fc09444bf485ba2a0261d4e80d4", // tool rule before memory tiers
+]);
 const MCP_SERVER_NAME = "agent-vault";
 
 async function writeAtomic(targetPath, data, mode) {

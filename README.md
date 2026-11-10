@@ -39,6 +39,9 @@ omp skill list --json
 | 프로젝트 | `project_resolve`, `project_list`, `project_scaffold` |
 | 에이전트 | `agent_memory_read`, `agent_memory_write`, `agent_handoff` |
 | QA 기록 | `log_write` |
+| 단기 메모리 | `short_memory_read`, `short_memory_write` (`projects/<id>/memory.md`, 교체 시 `expectedHash` 필요) |
+| 장기 메모리 | `long_memory_write` (`projects/<id>/long-term/YYYY-MM-DD-<slug>.md`, 생성 후 불변) |
+| 워크트리 기록 | `worktree_record`, `worktree_list` (구현, 사용자 지시, 조사를 워크트리별로 기록) |
 
 도구는 경로 탈출, 심볼릭 링크, 자격 증명 패턴, 오래된 해시 쓰기를 거부합니다. 모호한 프로젝트는 추측하지 않고 후보만 반환합니다. 수동으로 MCP 서버를 실행하려면 `node bin/vault-mcp.mjs --path <vault>`를 사용합니다.
 

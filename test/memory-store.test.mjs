@@ -304,3 +304,21 @@ test("context carries short-term memory, recent long-term notes and the current 
   assert.equal(context.worktree.key, "feature-context");
   assert.equal(context.worktree.records.length, 1);
 });
+
+test("a linked worktree with its own registry row resolves to that row, not to its parent", async (t) => {
+  const { root, vault } = await fixture(t);
+  const repo = path.join(root, "alpha-repo");
+  await mkdir(repo);
+  await git("git", ["init", "-q", "-b", "main", repo]);
+  await commit(repo);
+  const side = path.join(root, "alpha-side");
+  await git("git", ["-C", repo, "worktree", "add", "-q", "-b", "feature/side", side]);
+  await createProject(vault, { project: "side", title: "Side", sourceDir: "alpha-side", classification: "git worktree of alpha-repo" }, { now: NOW });
+
+  const resolved = await resolveProject(vault, { cwd: side });
+  assert.equal(resolved.status, "resolved");
+  assert.equal(resolved.projectId, "side");
+  const record = await worktreeRecord(vault, { cwd: side, kind: "implementation", slug: "side", title: "Side work", content: "Changed the side checkout." }, { now: NOW });
+  assert.match(record.path, /^projects\/side\/worktrees\/feature-side\//);
+  assert.equal((await resolveProject(vault, { cwd: repo })).projectId, "alpha");
+});

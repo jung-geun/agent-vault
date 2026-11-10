@@ -29,6 +29,8 @@ omp skill list --json
 
 전역 `alwaysApply` 규칙은 매 세션 `vault_context` 도구를 호출하도록 요구합니다. 설치기는 MCP 서버 `agent-vault`를 `~/.omp/agent/mcp.json`에 등록합니다. 다른 서버와 키는 그대로 보존하며, 같은 이름의 다른 항목이 있으면 덮어쓰지 않고 경고합니다.
 
+설치기는 OMP 확장 `integrations/omp/agent-vault-recorder.ts`도 `~/.omp/agent/extensions/agent-vault-recorder.ts`에 설치합니다. 이 확장은 사용자 입력마다 `instruction` 기록을, 파일을 수정한 턴이 끝날 때마다 `implementation` 기록을 현재 워크트리에 남깁니다. 첫 줄의 `agent-vault-recorder: managed by agent-vault install.` 표식이 있는 파일만 갱신하고, 표식이 없는 같은 이름의 파일은 보존하고 경고합니다. 프로젝트를 해석할 수 없거나 자격 증명이 감지되면 기록을 건너뛰고 경고만 표시합니다.
+
 등록되는 도구는 다음과 같습니다.
 
 | 목적 | 도구 |

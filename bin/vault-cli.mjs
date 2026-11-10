@@ -50,6 +50,7 @@ const getFlag = (name) => {
 const LEGACY_RULE_SHA256 = new Set([
   "99420e12daa5a61c72ae963495ce3f9084f680489020a64f51f78b6b70f23e19", // direct-file rule
   "2e1eb64d07bddc2434a2e2da6a6117907cb71fc09444bf485ba2a0261d4e80d4", // tool rule before memory tiers
+  "6a30f4ebde027f1cf6d6d0e64d7a5103b4bc4af7519cd2e5982b6a6a1602478b", // memory-tier rule before automatic recording
 ]);
 const MCP_SERVER_NAME = "agent-vault";
 
@@ -78,6 +79,30 @@ async function installRule(sourcePath, targetPath) {
   if (LEGACY_RULE_SHA256.has(createHash("sha256").update(existing).digest("hex"))) {
     await writeAtomic(targetPath, source, 0o644);
     return "updated from legacy version";
+  }
+  return "preserved existing file with different content";
+}
+
+// Marker line that identifies a file as installed by agent-vault; only marked files are overwritten.
+const RECORDER_MARKER = "// agent-vault-recorder: managed by agent-vault install.";
+
+async function installManagedFile(sourcePath, targetPath, marker) {
+  const source = await readFile(sourcePath);
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  let existing;
+  try {
+    existing = await readFile(targetPath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (existing === undefined) {
+    await writeAtomic(targetPath, source, 0o644);
+    return "installed";
+  }
+  if (existing.equals(source)) return "already current";
+  if (existing.toString("utf8").startsWith(marker)) {
+    await writeAtomic(targetPath, source, 0o644);
+    return "updated";
   }
   return "preserved existing file with different content";
 }
@@ -249,6 +274,15 @@ try {
           console.warn(`[WARN] ${mcpConfig}: ${MCP_SERVER_NAME} ${mcpResult}; review and merge manually.`);
         } else {
           console.log(`[OK] MCP server ${MCP_SERVER_NAME} ${mcpResult}: ${mcpConfig}`);
+        }
+
+        const recorderSource = path.join(packageRoot, "integrations", "omp", "agent-vault-recorder.ts");
+        const recorderTarget = path.resolve(os.homedir(), ".omp/agent/extensions/agent-vault-recorder.ts");
+        const recorderResult = await installManagedFile(recorderSource, recorderTarget, RECORDER_MARKER);
+        if (recorderResult.startsWith("preserved")) {
+          console.warn(`[WARN] ${recorderTarget}: ${recorderResult}; review and merge manually.`);
+        } else {
+          console.log(`[OK] worktree recorder extension ${recorderResult}: ${recorderTarget}`);
         }
       }
       break;

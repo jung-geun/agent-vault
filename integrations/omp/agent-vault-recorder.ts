@@ -1,10 +1,10 @@
 // agent-vault-recorder: managed by agent-vault install. Do not edit in place; reinstall to update.
 // Records each user instruction and each file-editing turn into the current worktree through the agent-vault store.
-// Investigation records stay model-driven (worktree_record). A write that fails (no resolved project, credential
-// refused) is reported as a UI warning and skipped; nothing is guessed.
+// Investigation records stay model-driven (worktree_record). A checkout with a `.agent-vault-project` marker is registered on first write.
+// A write that still fails (no resolved project, credential refused) is reported as a UI warning and skipped; nothing is guessed.
 import path from "node:path";
 import { resolveVaultPath } from "../skills/agent-vault/lib/vault-core.mjs";
-import { worktreeRecord } from "../skills/agent-vault/lib/memory-store.mjs";
+import { autoRegisterProject, worktreeRecord } from "../skills/agent-vault/lib/memory-store.mjs";
 
 interface RecorderContext {
 	cwd: string;
@@ -50,7 +50,10 @@ export default function agentVaultRecorder(pi: ExtensionApi): void {
 
 	const record = async (ctx: RecorderContext, write: (vault: string) => Promise<unknown>): Promise<void> => {
 		try {
-			await write(resolveVaultPath(undefined));
+			const vault = resolveVaultPath(undefined);
+			// Opt-in: registers only checkouts carrying the project marker file; others keep the warning below.
+			await autoRegisterProject(vault, { cwd: ctx.cwd });
+			await write(vault);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			ctx.ui?.notify?.(`agent-vault record skipped: ${message}`, "warning");

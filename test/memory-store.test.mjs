@@ -2,12 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { initVault, scaffoldProject } from "../lib/vault-core.mjs";
 import {
   appendAgentMemory,
+  autoRegisterProject,
   createProject,
   getContext,
   listProjects,
@@ -286,6 +287,55 @@ test("worktree records are kept per branch, and linked worktrees resolve to thei
   assert.deepEqual(listed.worktrees.map((w) => [w.key, w.records]), [["feature-add-search", 1], ["fix-retry", 1]]);
 
   await assert.rejects(worktreeRecord(vault, { cwd: repo, kind: "gossip", slug: "x", title: "x", content: "x" }), { code: "invalid_kind" });
+});
+
+test("marker-file checkouts auto-register once with the scaffolded layout; unmarked checkouts stay unregistered", async (t) => {
+  const { root, vault } = await fixture(t);
+  const marked = path.join(root, "beta-app");
+  const unmarked = path.join(root, "scratch-tool");
+  for (const dir of [marked, unmarked]) {
+    await mkdir(dir);
+    await git("git", ["init", "-q", "-b", "main", dir]);
+    await commit(dir);
+  }
+  await writeFile(path.join(marked, ".agent-vault-project"), "");
+
+  const skipped = await autoRegisterProject(vault, { cwd: unmarked }, { now: NOW });
+  assert.equal(skipped.status, "unregistered");
+  assert.equal(skipped.autoRegistered, false);
+  assert.equal((await listProjects(vault)).projects.some((p) => p.id === "scratch-tool"), false);
+
+  const first = await autoRegisterProject(vault, { cwd: marked }, { now: NOW });
+  assert.equal(first.autoRegistered, true);
+  assert.equal(first.projectId, "beta-app");
+  assert.deepEqual((await readdir(path.join(vault, "projects", "beta-app", "agents"))).sort(), ["builder", "coordinator", "handoffs", "investigator", "reviewer"]);
+  assert.equal((await resolveProject(vault, { cwd: marked })).status, "resolved");
+
+  const record = await worktreeRecord(vault, { cwd: marked, kind: "instruction", slug: "setup", title: "Setup", content: "Start." }, { now: NOW });
+  assert.match(record.path, /^projects\/beta-app\/worktrees\/main\//);
+
+  const again = await autoRegisterProject(vault, { cwd: marked }, { now: NOW });
+  assert.equal(again.autoRegistered, false);
+  assert.equal(again.status, "resolved");
+  const registryRows = (await readFile(path.join(vault, "_meta", "projects-index.md"), "utf8")).split("\n").filter((line) => /\| beta-app \|/.test(line));
+  assert.equal(registryRows.length, 1);
+});
+
+test("a marker in the main checkout registers its linked worktrees under the main project", async (t) => {
+  const { root, vault } = await fixture(t);
+  const main = path.join(root, "gamma-app");
+  await mkdir(main);
+  await git("git", ["init", "-q", "-b", "main", main]);
+  await commit(main);
+  await writeFile(path.join(main, ".agent-vault-project"), "");
+  const linked = path.join(root, "gamma-app-fix");
+  await git("git", ["-C", main, "worktree", "add", "-q", "-b", "fix/retry", linked]);
+
+  const registered = await autoRegisterProject(vault, { cwd: linked }, { now: NOW });
+  assert.equal(registered.autoRegistered, true);
+  assert.equal(registered.projectId, "gamma-app");
+  assert.equal((await resolveProject(vault, { cwd: linked })).projectId, "gamma-app");
+  assert.equal((await resolveProject(vault, { cwd: main })).status, "resolved");
 });
 
 test("context carries short-term memory, recent long-term notes and the current worktree", async (t) => {

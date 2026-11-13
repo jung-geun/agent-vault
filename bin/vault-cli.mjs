@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 
+import { execFile } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, cp, readFile, writeFile, lstat, rename, stat } from "node:fs/promises";
+import { mkdir, cp, readFile, writeFile, lstat, realpath, rename, stat } from "node:fs/promises";
+import { promisify } from "node:util";
 import { resolveVaultPath, initVault, scaffoldProject, getVaultStatus } from "../lib/vault-core.mjs";
 import { migrateFromWiki, migrateFromProjectRepo } from "../lib/migration.mjs";
+
+const execFileAsync = promisify(execFile);
 
 function printUsage() {
   console.log(`
@@ -30,6 +34,7 @@ Options:
   --from-repo <path>       Project repo containing OpenSpec or memory
   --global                 Install user skill and non-destructive OMP rule
   --local                  Install skill to ./.omp/skills/agent-vault
+  init also adds or refreshes guidance in each existing AGENTS.md and CLAUDE.md at the Git repository root; creates AGENTS.md only when neither exists.
 `);
 }
 
@@ -59,6 +64,81 @@ async function writeAtomic(targetPath, data, mode) {
   await writeFile(temp, data, { mode });
   await rename(temp, targetPath);
 }
+const INSTRUCTION_START = "<!-- agent-vault:start -->";
+const INSTRUCTION_END = "<!-- agent-vault:end -->";
+const PROJECT_INSTRUCTIONS = `${INSTRUCTION_START}
+## Agent Vault project memory
+
+At session start, call \`vault_context\` with this project's working directory. Use the resolved project; do not guess a project ID. Search and read relevant vault notes before relying on past decisions.
+
+Project files live under \`projects/<project-id>/\`:
+- \`index.md\`: project identity, navigation, and architecture summary.
+- \`specs/\`: accepted, living requirements; consult before changing behavior.
+- \`changes/<change>/proposal.md\`, \`design.md\`, and \`tasks.md\`: active change proposals and implementation plans.
+- \`memory.md\`: current work, open questions, and next steps.
+- \`long-term/\`: dated durable decisions and lessons.
+- \`worktrees/<branch-key>/\`: user instructions, implementation records, and investigations for each worktree.
+- \`agents/<role>/memory.md\` and \`agents/handoffs/\`: role-specific knowledge and immutable handoffs.
+- \`logs/\`: dated QA, work, review, and incident evidence.
+
+The repository-root \`.agent-vault-project\` file opts this checkout into first-write registration. The recorder adds it to local \`.git/info/exclude\`, not \`.gitignore\`.
+
+Use Agent Vault MCP tools to read and write vault content. Preserve append-only history and pass the read hash when replacing short-term or other replaceable notes.
+${INSTRUCTION_END}`;
+
+async function gitTopLevel(cwd) {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function configureProjectInstructions(projectRoot) {
+  const targets = [];
+  const seen = new Set();
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    const candidate = path.join(projectRoot, name);
+    try {
+      await lstat(candidate);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    const resolvedPath = await realpath(candidate);
+    const info = await stat(resolvedPath);
+    if (!info.isFile()) throw new Error(`${candidate} does not resolve to a regular file; refusing to modify it.`);
+    if (seen.has(resolvedPath)) continue;
+    seen.add(resolvedPath);
+    targets.push({ path: resolvedPath, mode: info.mode & 0o777 });
+  }
+  if (targets.length === 0) targets.push({ path: path.join(projectRoot, "AGENTS.md"), mode: 0o644 });
+
+  const updates = [];
+  for (const target of targets) {
+    let content = "";
+    try {
+      content = await readFile(target.path, "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const start = content.indexOf(INSTRUCTION_START);
+    const end = content.indexOf(INSTRUCTION_END);
+    if ((start < 0) !== (end < 0) || (start >= 0 && (end < start || content.indexOf(INSTRUCTION_START, start + 1) >= 0))) {
+      throw new Error(`Malformed Agent Vault instruction block in ${target.path}; repair its markers before running init again.`);
+    }
+    const updated = start >= 0
+      ? `${content.slice(0, start)}${PROJECT_INSTRUCTIONS}${content.slice(end + INSTRUCTION_END.length)}`
+      : `${content}${content && !content.endsWith("\n") ? "\n" : ""}${content ? "\n" : ""}${PROJECT_INSTRUCTIONS}\n`;
+    updates.push({ ...target, content, updated });
+  }
+  for (const update of updates) {
+    if (update.updated !== update.content) await writeAtomic(update.path, update.updated, update.mode);
+  }
+  return targets.map(({ path: filePath }) => filePath);
+}
+
 
 async function installRule(sourcePath, targetPath) {
   const source = await readFile(sourcePath);
@@ -152,7 +232,15 @@ try {
     case "init": {
       console.log(`Initializing Obsidian LLM Wiki Vault at: ${targetVaultPath}`);
       const res = await initVault(targetVaultPath);
+      const projectRoot = await gitTopLevel(process.cwd());
       console.log(`[OK] Vault initialized successfully: ${res.vaultPath}`);
+      if (!projectRoot) {
+        console.log("[INFO] Skipped project guidance: current directory is not inside a Git repository.");
+      } else {
+        for (const instructionPath of await configureProjectInstructions(projectRoot)) {
+          console.log(`[OK] Agent Vault project guidance configured: ${instructionPath}`);
+        }
+      }
       break;
     }
 

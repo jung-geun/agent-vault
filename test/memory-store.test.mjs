@@ -321,6 +321,28 @@ test("marker-file checkouts auto-register once with the scaffolded layout; unmar
   assert.equal(registryRows.length, 1);
 });
 
+test("the marker is added to local exclude once, while unmarked checkouts stay untouched", async (t) => {
+  const { root, vault } = await fixture(t);
+  const app = path.join(root, "delta-app");
+  const plain = path.join(root, "delta-plain");
+  for (const dir of [app, plain]) {
+    await mkdir(dir);
+    await git("git", ["init", "-q", "-b", "main", dir]);
+    await commit(dir);
+  }
+  await writeFile(path.join(app, ".agent-vault-project"), "");
+  const excludeOf = async (dir) => readFile(path.join(dir, ".git", "info", "exclude"), "utf8");
+
+  await autoRegisterProject(vault, { cwd: app }, { now: NOW });
+  await autoRegisterProject(vault, { cwd: app }, { now: NOW });
+  const lines = (await excludeOf(app)).split("\n").filter((line) => line === ".agent-vault-project");
+  assert.equal(lines.length, 1);
+
+  await autoRegisterProject(vault, { cwd: plain }, { now: NOW });
+  assert.doesNotMatch(await excludeOf(plain), /agent-vault-project/);
+
+});
+
 test("a marker in the main checkout registers its linked worktrees under the main project", async (t) => {
   const { root, vault } = await fixture(t);
   const main = path.join(root, "gamma-app");
@@ -336,7 +358,33 @@ test("a marker in the main checkout registers its linked worktrees under the mai
   assert.equal(registered.projectId, "gamma-app");
   assert.equal((await resolveProject(vault, { cwd: linked })).projectId, "gamma-app");
   assert.equal((await resolveProject(vault, { cwd: main })).status, "resolved");
+  assert.ok((await readFile(path.join(main, ".git", "info", "exclude"), "utf8")).split("\n").includes(".agent-vault-project"));
 });
+test("auto registration without cwd returns unresolved instead of throwing", async (t) => {
+  const { vault } = await fixture(t);
+  const result = await autoRegisterProject(vault);
+  assert.equal(result.status, "unresolved");
+  assert.equal(result.autoRegistered, false);
+});
+
+test("an exclude write failure does not block records for an already registered project", async (t) => {
+  const { root, vault } = await fixture(t);
+  const repo = path.join(root, "alpha-repo");
+  await mkdir(repo);
+  await git("git", ["init", "-q", "-b", "main", repo]);
+  await commit(repo);
+  await writeFile(path.join(repo, ".agent-vault-project"), "");
+  await rm(path.join(repo, ".git", "info", "exclude"));
+  await mkdir(path.join(repo, ".git", "info", "exclude"));
+
+  const result = await autoRegisterProject(vault, { cwd: repo }, { now: NOW });
+  assert.equal(result.status, "resolved");
+  assert.equal(result.projectId, "alpha");
+  assert.match(result.excludeWarning, /EISDIR/);
+  const record = await worktreeRecord(vault, { cwd: repo, kind: "instruction", slug: "safe", title: "Safe", content: "Still recorded." }, { now: NOW });
+  assert.match(record.path, /^projects\/alpha\/worktrees\/main\//);
+});
+
 
 test("context carries short-term memory, recent long-term notes and the current worktree", async (t) => {
   const { root, vault } = await fixture(t);

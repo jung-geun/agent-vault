@@ -29,7 +29,7 @@ omp skill list --json
 
 전역 `alwaysApply` 규칙은 매 세션 `vault_context` 도구를 호출하도록 요구합니다. 설치기는 MCP 서버 `agent-vault`를 `~/.omp/agent/mcp.json`에 등록합니다. 다른 서버와 키는 그대로 보존하며, 같은 이름의 다른 항목이 있으면 덮어쓰지 않고 경고합니다.
 
-설치기는 OMP 확장 `integrations/omp/agent-vault-recorder.ts`도 `~/.omp/agent/extensions/agent-vault-recorder.ts`에 설치합니다. 이 확장은 사용자 입력마다 `instruction` 기록을, 파일을 수정한 턴이 끝날 때마다 `implementation` 기록을 현재 워크트리에 남깁니다. 첫 줄의 `agent-vault-recorder: managed by agent-vault install.` 표식이 있는 파일만 갱신하고, 표식이 없는 같은 이름의 파일은 보존하고 경고합니다. 프로젝트를 해석할 수 없거나 자격 증명이 감지되면 기록을 건너뛰고 경고만 표시합니다.
+설치기는 OMP 확장 `integrations/omp/agent-vault-recorder.ts`도 `~/.omp/agent/extensions/agent-vault-recorder.ts`에 설치합니다. 이 확장은 사용자 입력마다 `instruction` 기록을, 파일을 수정한 턴이 끝날 때마다 `implementation` 기록을 현재 워크트리에 남깁니다. `.agent-vault-project` 마커가 있으면 프로젝트를 자동 등록하고, 마커를 `.git/info/exclude`에 추가해 로컬 설정으로 숨깁니다. exclude 갱신에 실패해도 프로젝트 기록은 계속 시도하고 별도 경고를 표시합니다. 첫 줄의 `agent-vault-recorder: managed by agent-vault install.` 표식이 있는 파일만 갱신하고, 표식이 없는 같은 이름의 파일은 보존하고 경고합니다. 프로젝트를 해석할 수 없거나 자격 증명이 감지되면 기록을 건너뛰고 경고만 표시합니다.
 
 등록되는 도구는 다음과 같습니다.
 
@@ -53,6 +53,8 @@ omp skill list --json
 node bin/vault-cli.mjs init
 node bin/vault-cli.mjs status
 ```
+
+`init`은 현재 디렉터리가 속한 Git 저장소 루트를 찾아 안내 파일을 설정합니다. 기존 `AGENTS.md`와 `CLAUDE.md`가 있으면 둘 다 관리 블록을 추가하거나 갱신하고, 둘 다 없으면 `AGENTS.md`를 만듭니다. 기존 문서는 관리 블록 밖에서 보존됩니다. 하위 디렉터리에서 실행해도 저장소 루트에 적용하며, Git 저장소 밖에서는 안내 파일 설정을 건너뜁니다. 안내 블록은 vault 파일들의 용도를 설명하고, 저장소 루트의 `.agent-vault-project`가 프로젝트 자동 등록을 허용하며 `.git/info/exclude`에 로컬로 숨겨진다는 점을 알려줍니다.
 
 ## 프로젝트 단위 설치
 

@@ -54,7 +54,7 @@ The MCP server `bin/vault-mcp.mjs` is registered by `install --global`. Use thes
 - Call `vault_context` with the working directory. It returns the user profile, coding standards, the resolved project index, role memory, and recent logs.
 - When `project_resolve` returns `ambiguous` or `unregistered`, ask the user or pass `project` explicitly. Never guess the project.
 - For a stable new repository, call `project_scaffold` once. It creates the workspace and registers the source directory. Do not scaffold temporary directories.
-- Opt-in auto registration: put an empty `.agent-vault-project` file at the git top level of a stable repository. The worktree recorder then registers that checkout on its first write, creating `projects/<id>/` with the scaffolded layout (specs, logs, wiki, agent roles). Unmarked directories are never registered.
+- Opt-in auto registration: put an empty `.agent-vault-project` file at the git top level of a stable repository. The worktree recorder then registers that checkout on its first write, creating `projects/<id>/` with the scaffolded layout (specs, logs, wiki, agent roles). It also adds the marker to `.git/info/exclude` (shared by linked worktrees) so it stays local and hidden from `git status`. Unmarked directories are never registered.
 
 ### Step 2: Find Before Claiming
 - `memory_search` ranks notes by title, path, and term matches across the resolved project, `user/`, and `shared/`. Cite the returned paths.
@@ -84,7 +84,7 @@ The MCP server `bin/vault-mcp.mjs` is registered by `install --global`. Use thes
 ## 5. CLI Commands & Tooling
 
 Run the CLI from the repository or installed skill directory: `node <agent-vault>/bin/vault-cli.mjs`.
-- `init [--path <path>]`: Bootstrap a vault without overwriting existing files.
+- `init [--path <path>]`: Bootstrap a vault. From any subdirectory inside a Git repository, configure the repository-root `AGENTS.md` and `CLAUDE.md` files that exist; create `AGENTS.md` only when neither exists. Outside a Git repository, skip project guidance. Preserve content outside the managed block. Explain vault project files and the `.agent-vault-project` opt-in marker.
 - `scaffold --project <id> [--title <title>]`: Create a project workspace.
 - `status [--project <id>]`: Check registered projects, specs, and agent memory health.
 - `migrate --from-wiki <path> [--profile-source <relative-file>]`: Import selected profile, project notes, and OpenSpec specs without modifying the source.

@@ -52,7 +52,10 @@ export default function agentVaultRecorder(pi: ExtensionApi): void {
 		try {
 			const vault = resolveVaultPath(undefined);
 			// Opt-in: registers only checkouts carrying the project marker file; others keep the warning below.
-			await autoRegisterProject(vault, { cwd: ctx.cwd });
+			const registration = await autoRegisterProject(vault, { cwd: ctx.cwd });
+			if (registration.excludeWarning) {
+				ctx.ui?.notify?.(`agent-vault marker exclude update failed: ${registration.excludeWarning}`, "warning");
+			}
 			await write(vault);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);

@@ -8,9 +8,27 @@ Agent Vault는 OMP용 스킬과 Node.js CLI입니다. Obsidian 호환 vault를 �
 - 전역 설치와 세션 규칙 연동에는 OMP가 필요합니다.
 - Obsidian 앱은 선택 사항입니다. vault는 Markdown과 `.obsidian` 설정으로 구성됩니다.
 
-## OMP 전역 설치
+## 빠른 설치
 
-저장소 루트에서 실행합니다.
+Node.js 20 이상이 필요합니다. 이 저장소는 private이므로 먼저 GitHub CLI로 인증합니다. 아래 명령은 installer 파일을 GitHub API에서 받아 실행하며, 저장소를 clone하지 않습니다. `install.sh`가 source archive를 내려받아 기존 설치 절차를 실행합니다.
+
+set -o pipefail
+gh auth login
+gh api repos/jung-geun/agent-vault/contents/install.sh --jq .content \
+  | node -e 'let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => process.stdout.write(Buffer.from(s, "base64")));' \
+  | bash
+```
+
+저장소가 public으로 바뀌면 인증 없이 실행할 수 있습니다.
+
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/jung-geun/agent-vault/main/install.sh | bash
+
+기본 설치 범위는 전역입니다. 프로젝트 단위 설치에는 `| bash -s -- --local`을 사용하세요. `npx` 설치는 npm 패키지가 아직 공개되지 않아 현재 사용할 수 없습니다.
+
+## OMP 전역 설치 (개발 체크아웃)
+
+소스 수정본을 시험할 때만 저장소 체크아웃에서 실행합니다. 일반 사용자는 위의 빠른 설치 명령을 사용하세요.
 
 ```sh
 cd ~/code/agent-vault

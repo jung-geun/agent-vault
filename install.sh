@@ -46,9 +46,9 @@ elif command -v gh >/dev/null 2>&1; then
 fi
 
 if [ "$DOWNLOADED" -eq 0 ]; then
-  ARCHIVE_URL="https://api.github.com/repos/$REPOSITORY/tarball/$REF"
   AUTH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
   if [ -n "$AUTH_TOKEN" ]; then
+    ARCHIVE_URL="https://api.github.com/repos/$REPOSITORY/tarball/$REF"
     CURL_CONFIG="$TMP_DIR/curl.conf"
     printf 'header = "Authorization: Bearer %s"\n' "$AUTH_TOKEN" >"$CURL_CONFIG"
     chmod 600 "$CURL_CONFIG"
@@ -56,9 +56,12 @@ if [ "$DOWNLOADED" -eq 0 ]; then
       echo "Could not download Agent Vault archive. Check GitHub access and token permissions." >&2
       exit 1
     fi
-  elif ! curl --fail --silent --show-error --location "$ARCHIVE_URL" --output "$ARCHIVE"; then
-    echo "Could not download Agent Vault archive. For a private repository, install GitHub CLI, run 'gh auth login', or set GH_TOKEN." >&2
-    exit 1
+  else
+    ARCHIVE_URL="https://github.com/$REPOSITORY/archive/$REF.tar.gz"
+    if ! curl --fail --silent --show-error --location "$ARCHIVE_URL" --output "$ARCHIVE"; then
+      echo "Could not download Agent Vault archive. For a private repository, install GitHub CLI, run 'gh auth login', or set GH_TOKEN." >&2
+      exit 1
+    fi
   fi
 fi
 

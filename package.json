@@ -11,6 +11,7 @@
     "test": "node --test"
   },
   "bin": {
+    "agent-vault-skill": "./bin/vault-cli.mjs",
     "vault-cli": "./bin/vault-cli.mjs",
     "vault-mcp": "./bin/vault-mcp.mjs"
   },

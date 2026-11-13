@@ -46,7 +46,7 @@ elif command -v gh >/dev/null 2>&1; then
 fi
 
 if [ "$DOWNLOADED" -eq 0 ]; then
-  ARCHIVE_URL="https://codeload.github.com/$REPOSITORY/tar.gz/refs/heads/$REF"
+  ARCHIVE_URL="https://api.github.com/repos/$REPOSITORY/tarball/$REF"
   AUTH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
   if [ -n "$AUTH_TOKEN" ]; then
     CURL_CONFIG="$TMP_DIR/curl.conf"

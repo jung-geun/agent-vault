@@ -10,26 +10,28 @@ Agent Vault는 OMP용 스킬과 Node.js CLI입니다. Obsidian 호환 vault를 �
 
 ## 빠른 설치
 
-Node.js 20 이상이 필요합니다. 이 저장소는 private이므로 먼저 GitHub CLI로 인증합니다. 아래 명령은 installer 파일을 GitHub API에서 받아 실행하며, 저장소를 clone하지 않습니다. `install.sh`가 source archive를 내려받아 기존 설치 절차를 실행합니다.
+Node.js 20 이상이 필요합니다. 이 저장소는 public이므로 clone 없이 바로 설치할 수 있습니다. 전역 설치 기본값은 `--global`입니다.
 
-```sh
-gh auth login
-bash -o pipefail -c 'gh api -H "Accept: application/vnd.github.raw" repos/jung-geun/agent-vault/contents/install.sh | bash'
-```
-
-저장소가 public으로 바뀌면 인증 없이 실행할 수 있습니다.
+`curl`로 설치:
 
 ```sh
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/jung-geun/agent-vault/main/install.sh | bash'
 ```
 
-비공개 저장소는 GitHub SSH 인증이 설정되어 있으면 `npx`로도 설치할 수 있습니다.
+또는 `npx`로 설치:
 
 ```sh
-npx -y -p git+ssh://git@github.com/jung-geun/agent-vault.git agent-vault-skill install --global
+npx -y github:jung-geun/agent-vault install --global
 ```
 
-공개 저장소라면 `npx -y github:jung-geun/agent-vault install --global`도 사용할 수 있습니다. 기본 설치 범위는 전역이며, 프로젝트 단위 설치에는 `--local`을 지정합니다.
+프로젝트에만 설치하려면 `--local`을 지정합니다.
+
+```sh
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/jung-geun/agent-vault/main/install.sh | bash -s -- --local'
+npx -y github:jung-geun/agent-vault install --local
+```
+
+두 방법 모두 `install.sh`/기존 CLI 설치 절차를 사용하며, 저장소를 직접 clone할 필요가 없습니다.
 
 ## OMP 전역 설치 (개발 체크아웃)
 

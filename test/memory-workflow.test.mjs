@@ -12,6 +12,7 @@ import { writeLog, writeHandoff, worktreeRecord, worktreeList } from "../lib/mem
 import {
   beginMemoryTask, endMemoryTask, getTieredContext, longTermWrite,
   longMemoryRead, longMemorySearch, migrateLongMemory,
+  reconsiderMemory, resolveMemoryReview, sleepMemory,
 } from "../lib/memory-tiers.mjs";
 import { queryWeeklyMemory } from "../lib/weekly-memory.mjs";
 import { observePersona, readPersona } from "../lib/persona.mjs";
@@ -188,4 +189,42 @@ test("memory query combines date and keyword filters with bounded, isolated page
   for (const invalid of [{ limit: 0 }, { limit: 101 }, { offset: -1 }, { from: "2026-02-30" }, { from: "2026-11-17", to: "2026-11-16" }, { week: "2026-99" }]) {
     await assert.rejects(queryWeeklyMemory(vault, { project: "alpha", ...invalid }));
   }
+});
+
+test("history queries retain unresolved warnings in shared and role namespaces until assessed resolution", async (t) => {
+  const { vault } = await fixture(t);
+  const challenged = [];
+  for (const role of [undefined, "builder"]) {
+    const target = { project: "alpha", role };
+    const memory = await longTermWrite(vault, { ...target, title: "Disputed fixture", content: "boundary-review claim needs independent evidence." }, { now: MONDAY });
+    const feedback = await reconsiderMemory(vault, { ...target, memoryId: memory.id, feedback: "This fixture claim is disputed." }, { now: MONDAY });
+    await sleepMemory(vault, target, { now: MONDAY });
+    await resolveMemoryReview(vault, {
+      ...target, reviewId: feedback.reviewId, memoryId: memory.id, action: "defer", note: "No independent fixture evidence.",
+      assessment: { decision: "unresolved", comparison: "Neither claim is established.", applicability: "Fixture only.", limitations: "No supporting source.", sources: [] },
+    }, { now: MONDAY });
+    challenged.push({ target, memory });
+  }
+  const untouched = await longTermWrite(vault, { project: "alpha", role: "reviewer", title: "Separate fixture", content: "boundary-review separate namespace." }, { now: MONDAY });
+  const page = await queryWeeklyMemory(vault, { project: "alpha", query: "boundary-review" }, { now: MONDAY });
+  for (const { target, memory } of challenged) {
+    const row = page.records.find((entry) => entry.id === memory.id);
+    const direct = await longMemoryRead(vault, { ...target, id: memory.id }, { now: MONDAY });
+    assert.equal(row.knowledgeReview.status, "unresolved");
+    assert.deepEqual(row.knowledgeReview, direct.knowledgeReview);
+  }
+  assert.equal(page.records.find((entry) => entry.id === untouched.id).knowledgeReview, undefined);
+  const builder = challenged[1];
+  const rolePage = await queryWeeklyMemory(vault, { project: "alpha", role: "builder", limit: 1 }, { now: MONDAY });
+  assert.equal(rolePage.records[0].id, builder.memory.id);
+  assert.equal(rolePage.records[0].knowledgeReview.status, "unresolved");
+  const retry = await reconsiderMemory(vault, { ...builder.target, memoryId: builder.memory.id, feedback: "New fixture source available.", trigger: "external_evidence" }, { now: MONDAY });
+  await sleepMemory(vault, builder.target, { now: MONDAY });
+  await resolveMemoryReview(vault, {
+    ...builder.target, reviewId: retry.reviewId, memoryId: builder.memory.id, action: "keep", note: "Retain within fixture scope.",
+    assessment: { decision: "retain", comparison: "New fixture evidence supports the bounded claim.", applicability: "Fixture only.", limitations: "Not a real-world finding.", sources: [{ kind: "project", reference: "fixture:review-source", finding: "Synthetic fixture support.", stance: "supports" }] },
+  }, { now: MONDAY });
+  const resolved = await queryWeeklyMemory(vault, { project: "alpha", query: "boundary-review" }, { now: MONDAY });
+  assert.equal(resolved.records.find((entry) => entry.id === builder.memory.id).knowledgeReview, undefined);
+  assert.equal(resolved.records.find((entry) => entry.id === challenged[0].memory.id).knowledgeReview.status, "unresolved");
 });

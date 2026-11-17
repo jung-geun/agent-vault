@@ -1,6 +1,6 @@
 {
   "name": "agent-vault-skill",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Evidence-driven agent memory with SQLite, MCP tools, task-boundary review, and an interactive skill installer",
   "type": "module",
   "license": "UNLICENSED",

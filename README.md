@@ -16,7 +16,7 @@ npx skills add jung-geun/agent-vault -g
 
 `-g`는 사용자 전역 설치입니다. 설치 소스에는 npm 패키지명이 아닌 GitHub 저장소명 `jung-geun/agent-vault`를 사용합니다.
 
-스킬 설치 후 아래 사용 방법에 따라 프로젝트와 MCP를 연결하면 됩니다. Agent Vault 자체 설치 TUI를 사용하려면 `npx -y agent-vault-skill@latest`를 실행하세요.
+스킬 설치 후 아래 사용 방법에 따라 프로젝트와 MCP를 연결하면 됩니다. CLI 예시는 npm 게시 상태와 무관하게 사용할 수 있는 GitHub 릴리스 `v1.1.1`로 고정합니다. 자체 설치 TUI는 `npx -y github:jung-geun/agent-vault#v1.1.1`로 실행하세요.
 
 공식 [Skills 커스터마이징](https://www.skills.sh/docs/customize)에 따라 `skills.sh.json`으로 저장소 소개를 구성합니다. 이 설정은 skills.sh의 표시만 바꾸며, 설치 방식이나 MCP·hooks를 자동으로 변경하지 않습니다.
 
@@ -38,7 +38,7 @@ npx skills add jung-geun/agent-vault -g
 사용할 Git 프로젝트 폴더에서 실행합니다. `my-project`를 프로젝트 식별자로 바꾸세요.
 
 ```sh
-npx -y agent-vault-skill@latest setup --mode manual --project my-project --harness generic
+npx -y github:jung-geun/agent-vault#v1.1.1 setup --mode manual --project my-project --harness generic
 ```
 
 기본 저장 위치는 `~/.vault`입니다. `generic`은 공통 환경용 설정이며, 환경별 설정을 분리하려면 `claude`, `codex`, `omp`를 지정할 수 있습니다.
@@ -50,11 +50,11 @@ npx -y agent-vault-skill@latest setup --mode manual --project my-project --harne
 ```json
 {
   "command": "npx",
-  "args": ["-y", "--package=agent-vault-skill@latest", "vault-mcp"]
+  "args": ["-y", "--package=github:jung-geun/agent-vault#v1.1.1", "vault-mcp"]
 }
 ```
 
-스킬 설치만으로 MCP나 hooks가 자동 연결되지는 않습니다. OMP에서는 `npx -y agent-vault-skill@latest install --global`로 MCP·규칙·hooks 연동을 설치할 수 있습니다.
+스킬 설치만으로 MCP나 hooks가 자동 연결되지는 않습니다. OMP에서는 `npx -y github:jung-geun/agent-vault#v1.1.1 install --global`로 MCP·규칙·hooks 연동을 설치할 수 있습니다.
 
 ### 3. 에이전트에게 요청
 
@@ -77,9 +77,9 @@ MCP 연결 후에는 자연어로 요청하면 됩니다.
 ### 5. 주간 메모리와 persona 설정
 
 ```sh
-npx -y agent-vault-skill@latest config --markdown-months 3 --timezone Asia/Seoul --workday-start 09:00
-npx -y agent-vault-skill@latest memory query --project my-project --from 2026-11-01 --to 2026-11-30 --query "배포"
-npx -y agent-vault-skill@latest persona
+npx -y github:jung-geun/agent-vault#v1.1.1 config --markdown-months 3 --timezone Asia/Seoul --workday-start 09:00
+npx -y github:jung-geun/agent-vault#v1.1.1 memory query --project my-project --from 2026-11-01 --to 2026-11-30 --query "배포"
+npx -y github:jung-geun/agent-vault#v1.1.1 persona
 ```
 
 주차는 월~일의 ISO 주차(`2026-47`)이며, 업무일 시작 이전은 이전 업무일로 계산합니다. 기본값은 시스템 시간대·09:00입니다. 하위 태스크는 `parentTaskId`, 중단된 작업의 재개는 `resumeTaskId`로 이전 업무 주차를 이어갑니다.

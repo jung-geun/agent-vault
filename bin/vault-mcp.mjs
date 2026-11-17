@@ -15,7 +15,7 @@ import { queryWeeklyMemory } from "../lib/weekly-memory.mjs";
 import { observePersona, readPersona, resolvePersona } from "../lib/persona.mjs";
 
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const SERVER_INFO = { name: "agent-vault", version: "1.1.0" };
+const SERVER_INFO = { name: "agent-vault", version: "1.1.1" };
 const MAX_RESULT_CHARS = 60_000;
 
 export const INSTRUCTIONS = [

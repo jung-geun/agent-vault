@@ -55,7 +55,7 @@ The vault location is dynamically resolved in order:
 
 ### Tools (MCP server `agent-vault`)
 
-Connect the stdio MCP server using `npx -y --package=agent-vault-skill@latest vault-mcp` in the harness's MCP configuration. OMP's `install --global` also installs its integration. All memory access must use tools, including profile and coding standards. Never use direct file/SQL/shell access to bypass them. If tools are unavailable, explain the limit and stop memory access. OMP's optional path guard is defense in depth, not OS isolation.
+Connect the stdio MCP server using `npx -y --package=github:jung-geun/agent-vault#v1.1.1 vault-mcp` in the harness's MCP configuration. OMP's `install --global` also installs its integration. All memory access must use tools, including profile and coding standards. Never use direct file/SQL/shell access to bypass them. If tools are unavailable, explain the limit and stop memory access. OMP's optional path guard is defense in depth, not OS isolation.
 
 ### Step 1: Session Start
 - Explain initial setup with `vault-cli setup`; without options it only prints guidance.
@@ -199,7 +199,7 @@ These are hypothetical decision patterns, not claims that checks have run:
 
 For the external Skills CLI, use `npx skills add jung-geun/agent-vault -g`. Its source is the GitHub repository, not the npm package name: `npx skills add agent-vault-skill -g` is not supported. The root `SKILL.md` is discoverable as `agent-vault`; no alternate layout or duplicate skill is needed. Skills CLI completion installs skill files, not the MCP server, vault initialization, or task lifecycle hooks. Do not report those integrations as configured solely because skill installation succeeded. Use the npm CLI below for OMP integration; connect MCP and lifecycle hooks explicitly in other harnesses.
 
-Users can run the published CLI without a checkout: `npx -y agent-vault-skill@latest`. Add `install --global` for OMP integration or `install --local` for a project copy. Use `@1.1.0` instead of `@latest` to pin this release. Maintainers can run `node <agent-vault>/bin/vault-cli.mjs` from a source checkout.
+Run the release CLI without a checkout using `npx -y github:jung-geun/agent-vault#v1.1.1`. Add `install --global` for OMP integration or `install --local` for a project copy. This pinned GitHub command does not depend on npm publication. Maintainers can run `node <agent-vault>/bin/vault-cli.mjs` from a source checkout.
 - `init [--path <path>]`: Bootstrap a vault. From any subdirectory inside a Git repository, configure the repository-root `AGENTS.md` and `CLAUDE.md` files that exist; create `AGENTS.md` only when neither exists. Outside a Git repository, skip project guidance. Preserve content outside the managed block. Explain vault project files and the `.agent-vault-project` opt-in marker.
 - `scaffold --project <id> [--title <title>]`: Create a project workspace.
 - `status [--project <id>]`: Check registered projects, specs, and agent memory health.
@@ -215,5 +215,5 @@ Users can run the published CLI without a checkout: `npx -y agent-vault-skill@la
 - `memory migrate --project <id> [--prune-legacy]`: Preserve exact legacy notes in SQLite; explicit pruning removes verified dated originals only while idle.
 - `persona [--project <id>]`: Inspect applied and pending behavioral guidance without reading vault files.
 - `install.sh [--global|--local]`: Download the public GitHub archive (no `git clone`) and invoke the existing install flow. Requires Node.js ^22.13.0 or >=23.4.0, Bash, curl, and tar. Private forks require authenticated GitHub CLI or `GH_TOKEN`.
-- Public one-command install: `npx -y agent-vault-skill@latest` opens the TUI in a terminal. Use `npx -y agent-vault-skill@latest install --global` or `--local` for automation. The raw GitHub `install.sh` and `npx -y github:jung-geun/agent-vault install --global` remain alternate paths.
+- Public one-command install: `npx -y github:jung-geun/agent-vault#v1.1.1` opens the TUI in a terminal. Add `install --global` or `--local` for automation. Prefer this pinned release over mutable branch-based installers.
 - MCP tools include `memory_query`, `persona_observe`, `persona_read`, `persona_resolve`, `vault_context`, document/short/long memory tools, `memory_reconsider`, `memory_review`, `memory_review_resolve`, `memory_sleep`, `memory_task_start`, `memory_task_end`, `memory_migrate`, worktree/project tools, role memory, `agent_handoff`, and `log_write`.

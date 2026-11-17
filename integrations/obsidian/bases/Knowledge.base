@@ -1,0 +1,25 @@
+# agent-vault-managed: Agent Vault Bases
+filters:
+  or:
+    - 'file.inFolder("projects")'
+    - 'file.inFolder("shared/knowledge")'
+views:
+  - type: table
+    name: Specifications
+    filters:
+      and:
+        - 'type == "spec"'
+    order:
+      - file.name
+      - status
+      - summary
+      - updated
+  - type: list
+    name: Concepts
+    filters:
+      and:
+        - 'type == "concept"'
+    order:
+      - file.name
+      - summary
+      - updated

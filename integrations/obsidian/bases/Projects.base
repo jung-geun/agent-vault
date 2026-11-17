@@ -1,0 +1,13 @@
+# agent-vault-managed: Agent Vault Bases
+filters:
+  and:
+    - 'file.inFolder("projects")'
+    - 'type == "project"'
+views:
+  - type: table
+    name: Projects
+    order:
+      - file.name
+      - summary
+      - status
+      - updated

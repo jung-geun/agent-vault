@@ -1,0 +1,49 @@
+/* agent-vault-managed: agent-vault-reading */
+/* Comfortable reading defaults for Agent Vault. Scoped to Markdown note panes. */
+/* Keep frontmatter data intact; avoid letting its property editor dominate reading view. */
+.markdown-reading-view .markdown-preview-view.show-properties .metadata-container {
+  display: none;
+}
+
+.markdown-reading-view .markdown-preview-view.is-readable-line-width .markdown-preview-sizer {
+  max-width: 72ch;
+  margin-inline: auto;
+}
+
+.markdown-reading-view .markdown-preview-view {
+  line-height: 1.68;
+}
+
+.markdown-reading-view .markdown-preview-view p,
+.markdown-reading-view .markdown-preview-view li {
+  line-height: 1.68;
+}
+
+.markdown-reading-view .markdown-preview-view h1,
+.markdown-reading-view .markdown-preview-view h2,
+.markdown-reading-view .markdown-preview-view h3 {
+  margin-top: 1.7em;
+  margin-bottom: 0.55em;
+  line-height: 1.3;
+}
+
+.markdown-reading-view .markdown-preview-view table {
+  width: 100%;
+  font-size: 0.92em;
+}
+
+.markdown-reading-view .markdown-preview-view th,
+.markdown-reading-view .markdown-preview-view td {
+  padding: 0.45em 0.65em;
+  vertical-align: top;
+}
+
+.markdown-reading-view .markdown-preview-view pre {
+  overflow-x: auto;
+}
+
+@media (max-width: 700px) {
+  .markdown-reading-view .markdown-preview-view.is-readable-line-width .markdown-preview-sizer {
+    max-width: 100%;
+  }
+}

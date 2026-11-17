@@ -1,29 +1,34 @@
 #!/usr/bin/env node
 
-import { execFile } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { createHash, randomBytes } from "node:crypto";
-import { mkdir, cp, readFile, writeFile, lstat, realpath, rename, stat } from "node:fs/promises";
-import { promisify } from "node:util";
+import { mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { resolveVaultPath, initVault, scaffoldProject, getVaultStatus } from "../lib/vault-core.mjs";
 import { migrateFromWiki, migrateFromProjectRepo } from "../lib/migration.mjs";
+import { getInstallTargets, installAgents, installManagedFile, previewInstallAgents, recommendedInstallMethod, writeAtomic } from "../lib/installer.mjs";
 
-const execFileAsync = promisify(execFile);
+import { setupVault, configureSettings, configureProjectInstructions, gitTopLevel } from "../lib/setup.mjs";
 
 function printUsage() {
   console.log(`
 Agent LLM Wiki Vault CLI (agent-vault)
 
 Usage:
+  vault-cli setup [--mode manual|auto] [--project <id>] [--harness omp|claude|codex|generic] [--path <path>]
+  vault-cli config [--mode manual|auto] [--harness <name>] [--path <path>]
+  vault-cli config --team-url <url> --team-id <id> [--token-env <name>] [--read-only]
+  vault-cli config --team-file <absolute-local.sqlite> --team-id <id> [--read-only]
+  vault-cli config --team-off | --review-thresholds 5,10,20 | --stale-days <days>
+  vault-cli memory sleep [--project <id> | --scope global] [--role <role>] [--path <path>]
+  vault-cli memory migrate --project <id> [--path <path>]
   vault-cli init [--path <path>]
   vault-cli scaffold --project <id> [--title <title>] [--path <path>]
   vault-cli status [--project <id>] [--path <path>]
   vault-cli migrate --from-wiki <path> [--profile-source <relative-file>] [--path <path>]
   vault-cli migrate --from-repo <path> [--project <id>] [--path <path>]
-  vault-cli install [--global | --local]
+  vault-cli install [--interactive] [--global | --local | --obsidian] [--agents omp,claude,universal,cursor] [--method copy|symlink]
 
 Options:
   --path <path>            Target Obsidian vault path (default: ~/.vault)
@@ -32,14 +37,23 @@ Options:
   --from-wiki <path>       Path to existing Obsidian-compatible wiki
   --profile-source <path>  Optional profile file relative to --from-wiki
   --from-repo <path>       Project repo containing OpenSpec or memory
-  --global                 Install user skill and non-destructive OMP rule
-  --local                  Install skill to ./.omp/skills/agent-vault
+  --global                Install user skills (default: OMP and Universal)
+  --local                 Install project-local skills (default: OMP)
+  --interactive           Choose agents, scope and method, then confirm exact paths
+  --agents <ids>          Comma-separated agent targets
+  --method <method>       Copy independent bundles or link to a stable Universal bundle
+  --obsidian              Install Agent Vault Wiki and Bases into the target vault
   init also adds or refreshes guidance in each existing AGENTS.md and CLAUDE.md at the Git repository root; creates AGENTS.md only when neither exists.
+  setup without --mode prints guided help and makes no changes.
+  Setup never installs global integrations or enables team memory.
+  Team SQLite is same-host/local-filesystem only, never NFS or sync folders.
+  Memory is tool-only. The OMP guard is defense in depth, not an OS security sandbox.
 `);
 }
 
 const args = process.argv.slice(2);
-const command = args[0];
+const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+const command = args[0] ?? (terminal ? "install" : undefined);
 
 if (!command || args.includes("--help") || args.includes("-h")) {
   printUsage();
@@ -51,184 +65,185 @@ const getFlag = (name) => {
   return idx >= 0 ? args[idx + 1] : undefined;
 };
 
-// SHA-256 of rule files shipped before the tool-based rule. Only these copies are upgraded in place.
-const LEGACY_RULE_SHA256 = new Set([
-  "99420e12daa5a61c72ae963495ce3f9084f680489020a64f51f78b6b70f23e19", // direct-file rule
-  "2e1eb64d07bddc2434a2e2da6a6117907cb71fc09444bf485ba2a0261d4e80d4", // tool rule before memory tiers
-  "6a30f4ebde027f1cf6d6d0e64d7a5103b4bc4af7519cd2e5982b6a6a1602478b", // memory-tier rule before automatic recording
-]);
-const MCP_SERVER_NAME = "agent-vault";
-
-async function writeAtomic(targetPath, data, mode) {
-  const temp = `${targetPath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  await writeFile(temp, data, { mode });
-  await rename(temp, targetPath);
+// New command surfaces reject unknown or missing values instead of silently ignoring them.
+function commandFlags(start, valueFlags, booleanFlags = []) {
+  const values = {};
+  for (let index = start; index < args.length; index++) {
+    const flag = args[index];
+    if (Object.hasOwn(values, flag)) throw new Error(`Duplicate option: ${flag}`);
+    if (booleanFlags.includes(flag)) {
+      values[flag] = true;
+    } else if (valueFlags.includes(flag)) {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value.`);
+      values[flag] = value;
+    } else {
+      throw new Error(`Unknown option: ${flag}`);
+    }
+  }
+  return values;
 }
-const INSTRUCTION_START = "<!-- agent-vault:start -->";
-const INSTRUCTION_END = "<!-- agent-vault:end -->";
-const PROJECT_INSTRUCTIONS = `${INSTRUCTION_START}
-## Agent Vault project memory
 
-At session start, call \`vault_context\` with this project's working directory. Use the resolved project; do not guess a project ID. Search and read relevant vault notes before relying on past decisions.
 
-Project files live under \`projects/<project-id>/\`:
-- \`index.md\`: project identity, navigation, and architecture summary.
-- \`specs/\`: accepted, living requirements; consult before changing behavior.
-- \`changes/<change>/proposal.md\`, \`design.md\`, and \`tasks.md\`: active change proposals and implementation plans.
-- \`memory.md\`: current work, open questions, and next steps.
-- \`long-term/\`: dated durable decisions and lessons.
-- \`worktrees/<branch-key>/\`: user instructions, implementation records, and investigations for each worktree.
-- \`agents/<role>/memory.md\` and \`agents/handoffs/\`: role-specific knowledge and immutable handoffs.
-- \`logs/\`: dated QA, work, review, and incident evidence.
-
-The repository-root \`.agent-vault-project\` file opts this checkout into first-write registration. The recorder adds it to local \`.git/info/exclude\`, not \`.gitignore\`.
-
-Use Agent Vault MCP tools to read and write vault content. Preserve append-only history and pass the read hash when replacing short-term or other replaceable notes.
-${INSTRUCTION_END}`;
-
-async function gitTopLevel(cwd) {
+async function readJsonFile(targetPath, fallback) {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-    return stdout.trim() || null;
-  } catch {
-    return null;
+    return JSON.parse(await readFile(targetPath, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return fallback;
+    throw error;
   }
 }
 
-async function configureProjectInstructions(projectRoot) {
-  const targets = [];
-  const seen = new Set();
-  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
-    const candidate = path.join(projectRoot, name);
-    try {
-      await lstat(candidate);
-    } catch (error) {
-      if (error.code === "ENOENT") continue;
-      throw error;
-    }
-    const resolvedPath = await realpath(candidate);
-    const info = await stat(resolvedPath);
-    if (!info.isFile()) throw new Error(`${candidate} does not resolve to a regular file; refusing to modify it.`);
-    if (seen.has(resolvedPath)) continue;
-    seen.add(resolvedPath);
-    targets.push({ path: resolvedPath, mode: info.mode & 0o777 });
-  }
-  if (targets.length === 0) targets.push({ path: path.join(projectRoot, "AGENTS.md"), mode: 0o644 });
-
-  const updates = [];
-  for (const target of targets) {
-    let content = "";
-    try {
-      content = await readFile(target.path, "utf8");
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    const start = content.indexOf(INSTRUCTION_START);
-    const end = content.indexOf(INSTRUCTION_END);
-    if ((start < 0) !== (end < 0) || (start >= 0 && (end < start || content.indexOf(INSTRUCTION_START, start + 1) >= 0))) {
-      throw new Error(`Malformed Agent Vault instruction block in ${target.path}; repair its markers before running init again.`);
-    }
-    const updated = start >= 0
-      ? `${content.slice(0, start)}${PROJECT_INSTRUCTIONS}${content.slice(end + INSTRUCTION_END.length)}`
-      : `${content}${content && !content.endsWith("\n") ? "\n" : ""}${content ? "\n" : ""}${PROJECT_INSTRUCTIONS}\n`;
-    updates.push({ ...target, content, updated });
-  }
-  for (const update of updates) {
-    if (update.updated !== update.content) await writeAtomic(update.path, update.updated, update.mode);
-  }
-  return targets.map(({ path: filePath }) => filePath);
-}
-
-
-async function installRule(sourcePath, targetPath) {
-  const source = await readFile(sourcePath);
+async function writeJsonFile(targetPath, value) {
   await mkdir(path.dirname(targetPath), { recursive: true });
-  let existing;
-  try {
-    const destinationStat = await lstat(targetPath);
-    if (!destinationStat.isFile()) return "preserved non-regular destination";
-    existing = await readFile(targetPath);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  if (existing === undefined) {
-    await writeFile(targetPath, source, { flag: "wx" });
-    return "installed";
-  }
-  if (existing.equals(source)) return "already current";
-  if (LEGACY_RULE_SHA256.has(createHash("sha256").update(existing).digest("hex"))) {
-    await writeAtomic(targetPath, source, 0o644);
-    return "updated from legacy version";
-  }
-  return "preserved existing file with different content";
+  await writeAtomic(targetPath, `${JSON.stringify(value, null, 2)}\n`, 0o644);
 }
 
-// Marker line that identifies a file as installed by agent-vault; only marked files are overwritten.
-const RECORDER_MARKER = "// agent-vault-recorder: managed by agent-vault install.";
+async function installObsidianAssets(packageRoot, vaultPath) {
+  const vaultInfo = await stat(vaultPath).catch((error) => {
+    if (error.code === "ENOENT") throw new Error(`Vault not found at ${vaultPath}; run 'vault-cli init' first.`);
+    throw error;
+  });
+  if (!vaultInfo.isDirectory()) throw new Error(`Vault path is not a directory: ${vaultPath}`);
+  // The user explicitly selected this vault; bind its root before strict child-path checks.
+  vaultPath = await realpath(vaultPath);
 
-async function installManagedFile(sourcePath, targetPath, marker) {
-  const source = await readFile(sourcePath);
-  await mkdir(path.dirname(targetPath), { recursive: true });
-  let existing;
-  try {
-    existing = await readFile(targetPath);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  if (existing === undefined) {
-    await writeAtomic(targetPath, source, 0o644);
-    return "installed";
-  }
-  if (existing.equals(source)) return "already current";
-  if (existing.toString("utf8").startsWith(marker)) {
-    await writeAtomic(targetPath, source, 0o644);
-    return "updated";
-  }
-  return "preserved existing file with different content";
-}
+  const pluginSource = path.join(packageRoot, "integrations", "obsidian", "agent-vault-wiki");
+  const pluginTarget = path.join(vaultPath, ".obsidian", "plugins", "agent-vault-wiki");
+  const pluginMarker = "// agent-vault-managed: Agent Vault Wiki";
+  const pluginStylesMarker = "/* agent-vault-managed: Agent Vault Wiki */";
+  const mainTarget = path.join(pluginTarget, "main.js");
+  const mainResult = await installManagedFile(path.join(pluginSource, "main.js"), mainTarget, pluginMarker);
+  let pluginSafe = !mainResult.startsWith("preserved");
+  if (pluginSafe) console.log(`[OK] Agent Vault Wiki ${mainResult}: ${mainTarget}`);
+  else console.warn(`[WARN] ${mainTarget}: ${mainResult}; plugin files were preserved.`);
 
-// Adds the agent-vault MCP entry to the OMP user MCP config. Other servers and keys are kept as-is.
-async function registerMcpServer(configPath, entry) {
-  let config = { mcpServers: {} };
-  let mode = 0o600;
-  let raw;
-  try {
-    raw = await readFile(configPath, "utf8");
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  if (raw !== undefined) {
-    try {
-      config = JSON.parse(raw);
-    } catch (error) {
-      throw new Error(`${configPath} is not valid JSON (${error.message}); fix it before installing the MCP server.`);
+  if (pluginSafe) {
+    for (const file of ["styles.css"]) {
+      const target = path.join(pluginTarget, file);
+      const result = await installManagedFile(path.join(pluginSource, file), target, pluginStylesMarker);
+      if (result.startsWith("preserved")) {
+        pluginSafe = false;
+        console.warn(`[WARN] ${target}: ${result}.`);
+      } else {
+        console.log(`[OK] Agent Vault Wiki ${result}: ${target}`);
+      }
     }
-    mode = (await stat(configPath)).mode & 0o777;
   }
-  config.mcpServers ??= {};
-  const current = config.mcpServers[MCP_SERVER_NAME];
-  if (current !== undefined && JSON.stringify(current) === JSON.stringify(entry)) return "already current";
-  // An entry whose server path is our installed copy is ours: refresh it (for example after a Node upgrade).
-  const ownedByUs = Array.isArray(current?.args) && String(current.args[0]).replaceAll("\\", "/").endsWith("skills/agent-vault/bin/vault-mcp.mjs");
-  if (current !== undefined && !ownedByUs) return "preserved existing entry that differs";
-  config.mcpServers[MCP_SERVER_NAME] = entry;
-  await mkdir(path.dirname(configPath), { recursive: true });
-  await writeAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`, mode);
-  return current === undefined ? "registered" : "updated";
+
+  const obsoleteDataPath = path.join(pluginTarget, "data.cjs");
+  try {
+    const obsoleteData = await readFile(obsoleteDataPath, "utf8");
+    if (obsoleteData.startsWith(pluginMarker)) await rm(obsoleteDataPath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  if (pluginSafe) {
+    const manifestTarget = path.join(pluginTarget, "manifest.json");
+    const manifest = JSON.parse(await readFile(path.join(pluginSource, "manifest.json"), "utf8"));
+    const existingManifest = await readJsonFile(manifestTarget, null);
+    if (existingManifest && existingManifest.id !== manifest.id) {
+      pluginSafe = false;
+      console.warn(`[WARN] ${manifestTarget}: preserved manifest with a different plugin id.`);
+    } else if (!existingManifest || JSON.stringify(existingManifest) !== JSON.stringify(manifest)) {
+      await writeJsonFile(manifestTarget, manifest);
+    }
+  }
+
+  const snippetSource = path.join(packageRoot, "integrations", "obsidian", "agent-vault-reading.css");
+  const snippetTarget = path.join(vaultPath, ".obsidian", "snippets", "agent-vault-reading.css");
+  const snippetResult = await installManagedFile(snippetSource, snippetTarget, "/* agent-vault-managed: agent-vault-reading */");
+  if (snippetResult.startsWith("preserved")) console.warn(`[WARN] ${snippetTarget}: ${snippetResult}.`);
+  else console.log(`[OK] Reading snippet ${snippetResult}: ${snippetTarget}`);
+
+  for (const base of ["Projects.base", "Knowledge.base"]) {
+    const source = path.join(packageRoot, "integrations", "obsidian", "bases", base);
+    const target = path.join(vaultPath, "_wiki", "views", base);
+    const result = await installManagedFile(source, target, "# agent-vault-managed: Agent Vault Bases");
+    if (result.startsWith("preserved")) console.warn(`[WARN] ${target}: ${result}.`);
+    else console.log(`[OK] Bases view ${result}: ${target}`);
+  }
+
+  const corePluginsPath = path.join(vaultPath, ".obsidian", "core-plugins.json");
+  const corePlugins = await readJsonFile(corePluginsPath, {});
+  if (!corePlugins || typeof corePlugins !== "object" || Array.isArray(corePlugins)) {
+    throw new Error(`${corePluginsPath} must contain a JSON object.`);
+  }
+  if (corePlugins.bases !== true) {
+    corePlugins.bases = true;
+    await writeJsonFile(corePluginsPath, corePlugins);
+  }
+
+  if (!snippetResult.startsWith("preserved")) {
+    const appearancePath = path.join(vaultPath, ".obsidian", "appearance.json");
+    const appearance = await readJsonFile(appearancePath, {});
+    if (!Array.isArray(appearance.enabledCssSnippets)) appearance.enabledCssSnippets = [];
+    if (!appearance.enabledCssSnippets.includes("agent-vault-reading")) {
+      appearance.enabledCssSnippets.push("agent-vault-reading");
+      await writeJsonFile(appearancePath, appearance);
+    }
+  }
+
+  if (pluginSafe) {
+    const enabledPath = path.join(vaultPath, ".obsidian", "community-plugins.json");
+    const enabled = await readJsonFile(enabledPath, []);
+    if (!Array.isArray(enabled)) throw new Error(`${enabledPath} must contain a JSON array.`);
+    if (!enabled.includes("agent-vault-wiki")) {
+      enabled.push("agent-vault-wiki");
+      await writeJsonFile(enabledPath, enabled);
+    }
+    console.log("[OK] Agent Vault Wiki enabled. Restart Obsidian to load it.");
+  } else {
+    console.warn("[WARN] Plugin activation skipped because existing plugin files were preserved.");
+  }
 }
 
-async function installSkillFiles(sourceDir, targetDir) {
-  await mkdir(targetDir, { recursive: true });
-  for (const entry of ["SKILL.md", "package.json", "bin", "lib", "integrations"]) {
-    await cp(path.join(sourceDir, entry), path.join(targetDir, entry), { recursive: true });
-  }
-}
 
 const explicitPath = getFlag("--path");
 const targetVaultPath = resolveVaultPath(explicitPath);
 
 try {
   switch (command) {
+    case "setup": {
+      const flags = commandFlags(1, ["--mode", "--project", "--harness", "--path", "--title"]);
+      const result = await setupVault(targetVaultPath, {
+        mode: flags["--mode"], project: flags["--project"], harness: flags["--harness"],
+        title: flags["--title"], cwd: process.cwd(),
+      });
+      console.log(result.guide ?? JSON.stringify(result, null, 2));
+      break;
+    }
+
+    case "config": {
+      const flags = commandFlags(1, ["--mode", "--harness", "--path", "--team-url", "--team-file", "--team-id", "--token-env", "--review-thresholds", "--stale-days"], ["--read-only", "--team-off"]);
+      const settings = await configureSettings(targetVaultPath, {
+        mode: flags["--mode"], harness: flags["--harness"],
+        teamUrl: flags["--team-url"], teamFile: flags["--team-file"], teamId: flags["--team-id"],
+        tokenEnv: flags["--token-env"], readOnly: flags["--read-only"], teamOff: flags["--team-off"],
+        reviewThresholds: flags["--review-thresholds"], staleDays: flags["--stale-days"],
+      });
+      if (flags["--team-file"]) console.error("[WARN] Team SQLite requires one host and a local filesystem; never use NFS or sync folders.");
+      console.log(JSON.stringify(settings, null, 2));
+      break;
+    }
+
+    case "memory": {
+      const action = args[1];
+      if (!["sleep", "migrate"].includes(action)) throw new Error("memory requires sleep or migrate.");
+      const flags = commandFlags(2, action === "sleep" ? ["--project", "--scope", "--role", "--path"] : ["--project", "--path"]);
+      if (flags["--scope"] && flags["--scope"] !== "global") throw new Error("--scope must be global; use --project for project memory.");
+      if (flags["--project"] && flags["--scope"]) throw new Error("Choose --project or --scope global, not both.");
+      if (action === "migrate" && !flags["--project"]) throw new Error("memory migrate requires --project.");
+      const tiers = await import("../lib/memory-tiers.mjs");
+      const options = { cwd: process.cwd(), project: flags["--project"], scope: flags["--scope"], role: flags["--role"] };
+      const result = action === "sleep"
+        ? await tiers.sleepMemory(targetVaultPath, options)
+        : await tiers.migrateLongMemory(targetVaultPath, options);
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+
     case "init": {
       console.log(`Initializing Obsidian LLM Wiki Vault at: ${targetVaultPath}`);
       const res = await initVault(targetVaultPath);
@@ -322,57 +337,65 @@ try {
     }
 
     case "install": {
-      const isLocal = args.includes("--local");
-      const isGlobal = args.includes("--global");
-      if (isLocal && isGlobal) throw new Error("Choose only one install scope: --global or --local.");
-      const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-
-      if (isLocal) {
-        const targetDir = path.resolve(process.cwd(), ".omp/skills/agent-vault");
-        if (targetDir !== packageRoot) await installSkillFiles(packageRoot, targetDir);
-        console.log(`[OK] Installed agent-vault skill locally to: ${targetDir}`);
-      } else {
-        const targetDirs = [
-          path.resolve(os.homedir(), ".omp/agent/skills/agent-vault"),
-          path.resolve(os.homedir(), ".agents/skills/agent-vault"),
-        ];
-        for (const targetDir of targetDirs) {
-          if (targetDir !== packageRoot) await installSkillFiles(packageRoot, targetDir);
-          console.log(`[OK] Installed agent-vault skill globally to: ${targetDir}`);
-        }
-
-        const ruleSource = path.join(packageRoot, "integrations", "omp", "agent-vault.rule.md");
-        const ruleTarget = path.resolve(os.homedir(), ".agents/rules/agent-vault.md");
-        const ruleResult = await installRule(ruleSource, ruleTarget);
-        if (ruleResult.startsWith("preserved")) {
-          console.warn(`[WARN] ${ruleTarget}: ${ruleResult}; review and merge manually.`);
-        } else {
-          console.log(`[OK] OMP user rule ${ruleResult}: ${ruleTarget}`);
-        }
-
-        const serverPath = path.resolve(os.homedir(), ".omp/agent/skills/agent-vault/bin/vault-mcp.mjs");
-        const mcpConfig = path.resolve(os.homedir(), ".omp/agent/mcp.json");
-        const mcpResult = await registerMcpServer(mcpConfig, {
-          type: "stdio",
-          command: "node",
-          args: [serverPath],
-          enabled: true,
-        });
-        if (mcpResult.startsWith("preserved")) {
-          console.warn(`[WARN] ${mcpConfig}: ${MCP_SERVER_NAME} ${mcpResult}; review and merge manually.`);
-        } else {
-          console.log(`[OK] MCP server ${MCP_SERVER_NAME} ${mcpResult}: ${mcpConfig}`);
-        }
-
-        const recorderSource = path.join(packageRoot, "integrations", "omp", "agent-vault-recorder.ts");
-        const recorderTarget = path.resolve(os.homedir(), ".omp/agent/extensions/agent-vault-recorder.ts");
-        const recorderResult = await installManagedFile(recorderSource, recorderTarget, RECORDER_MARKER);
-        if (recorderResult.startsWith("preserved")) {
-          console.warn(`[WARN] ${recorderTarget}: ${recorderResult}; review and merge manually.`);
-        } else {
-          console.log(`[OK] worktree recorder extension ${recorderResult}: ${recorderTarget}`);
-        }
+      const flags = commandFlags(1, ["--agents", "--method", "--path"], ["--global", "--local", "--obsidian", "--interactive"]);
+      const isLocal = Boolean(flags["--local"]);
+      const isGlobal = Boolean(flags["--global"]);
+      const isObsidian = Boolean(flags["--obsidian"]);
+      const interactive = Boolean(flags["--interactive"] || (terminal && args.length <= 1));
+      if ((isLocal && isGlobal) || (isObsidian && (isLocal || isGlobal))) {
+        throw new Error("Choose one install scope: --global, --local or --obsidian.");
       }
+      if (interactive && !terminal) throw new Error("--interactive requires an interactive terminal; no files were changed.");
+      if (isObsidian && (interactive || flags["--agents"] || flags["--method"])) {
+        throw new Error("--obsidian cannot be combined with --interactive, --agents or --method.");
+      }
+      const method = flags["--method"] ?? (interactive ? "symlink" : "copy");
+      if (!["copy", "symlink"].includes(method)) throw new Error("--method must be copy or symlink.");
+      const selected = flags["--agents"]?.split(",").map((id) => id.trim());
+      const available = await getInstallTargets();
+      for (const id of selected ?? []) {
+        if (!available.some((target) => target.id === id)) throw new Error(`Unknown agent target: ${id || "(empty)"}`);
+      }
+      const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+      if (isObsidian) {
+        await installObsidianAssets(packageRoot, targetVaultPath);
+        break;
+      }
+      let plan = {
+        scope: isLocal ? "local" : "global",
+        method,
+        targets: selected ?? (isLocal ? ["omp"] : ["omp", "universal"]),
+      };
+      if (interactive) {
+        const { runInstallTui } = await import("../lib/install-tui.mjs");
+        const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+        if (!flags["--method"]) plan.method = await recommendedInstallMethod(plan);
+        plan = await runInstallTui({
+          targets: available,
+          initialScope: plan.scope,
+          initialMethod: plan.method,
+          defaultTargets: [...new Set(["universal", ...plan.targets])],
+          skill: { name: "agent-vault", version: manifest.version, source: packageRoot },
+          preview: (choice) => previewInstallAgents({ sourceDir: packageRoot, ...choice }),
+        });
+        if (!plan) {
+          console.log("Installation cancelled. No files were changed.");
+          break;
+        }
+        plan.targets = [...new Set(["universal", ...plan.targets])];
+      }
+      const result = await installAgents({ sourceDir: packageRoot, ...plan });
+      for (const target of result.targets) {
+        const scope = result.scope === "global" ? "globally" : "locally";
+        if (target.status.startsWith("preserved")) console.warn(`[WARN] ${target.path}: ${target.status}.`);
+        else console.log(`[OK] Installed agent-vault skill ${scope} to: ${target.path} (${target.status})`);
+      }
+      for (const integration of result.integrations) {
+        if (integration.status.startsWith("preserved")) {
+          console.warn(`[WARN] ${integration.path}: ${integration.status}; review and merge manually.`);
+        } else console.log(`[OK] ${integration.label} ${integration.status}: ${integration.path}`);
+      }
+      for (const note of result.notes) console.log(`[INFO] ${note}`);
       break;
     }
 

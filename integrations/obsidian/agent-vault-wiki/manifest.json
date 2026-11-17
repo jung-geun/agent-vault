@@ -1,0 +1,9 @@
+{
+  "id": "agent-vault-wiki",
+  "name": "Agent Vault Wiki",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Search Agent Vault notes and inspect provenance, links, and observed agent access.",
+  "author": "Agent Vault",
+  "isDesktopOnly": false
+}

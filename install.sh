@@ -23,10 +23,10 @@ if [ "$#" -gt 0 ]; then
 fi
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js 20 or later is required. Install Node.js first." >&2
+  echo "Node.js 22.13+ (22.x) or 23.4+ is required. Install Node.js first." >&2
   exit 1
 fi
-node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 20) { console.error("Node.js 20 or later is required."); process.exit(1); }'
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 13) || (major === 23 && minor < 4)) { console.error("Node.js 22.13+ (22.x) or 23.4+ is required."); process.exit(1); }'
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-vault-install.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM

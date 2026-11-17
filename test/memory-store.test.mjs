@@ -7,12 +7,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { initVault, scaffoldProject } from "../lib/vault-core.mjs";
 import {
-  appendAgentMemory,
+  appendAccessEvent,
   autoRegisterProject,
   createProject,
-  getContext,
   listProjects,
-  longTermWrite,
   readMemory,
   resolveProject,
   searchMemory,
@@ -23,12 +21,14 @@ import {
   writeHandoff,
   writeMemory,
 } from "../lib/memory-store.mjs";
+import { appendAgentMemory, longTermWrite, longMemoryRead, getTieredContext as getContext } from "../lib/memory-tiers.mjs";
+import { closeMemoryDbs } from "../lib/memory-db.mjs";
 
 const NOW = new Date("2026-11-10T00:00:00Z");
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "agent-vault-store-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => { closeMemoryDbs(); await rm(root, { recursive: true, force: true }); });
   const vault = path.join(root, "vault");
   await initVault(vault);
   await scaffoldProject(vault, "alpha", "Alpha");
@@ -103,6 +103,29 @@ test("frontmatter is generated for new notes and updated on append", async (t) =
   assert.match(note.content, /Use fixtures\.[\s\S]*Second line\./);
 });
 
+test("concurrent access events append complete lines without query text", async (t) => {
+  const { vault } = await fixture(t);
+  const previous = process.env.AGENT_VAULT_DISABLE_ACCESS_LOG;
+  delete process.env.AGENT_VAULT_DISABLE_ACCESS_LOG;
+  t.after(() => {
+    if (previous === undefined) delete process.env.AGENT_VAULT_DISABLE_ACCESS_LOG;
+    else process.env.AGENT_VAULT_DISABLE_ACCESS_LOG = previous;
+  });
+
+  await Promise.all(Array.from({ length: 24 }, (_, index) => appendAccessEvent(vault, {
+    tool: "memory_search",
+    args: { role: "builder", query: `private-query-${index}` },
+    result: { totalMatches: index, results: [] },
+    now: new Date(NOW.getTime() + index),
+  })));
+
+  const log = await readFile(path.join(vault, ".agent-vault", "access.jsonl"), "utf8");
+  const events = log.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(events.length, 24);
+  assert.ok(events.every((event) => event.tool === "memory_search" && event.role === "builder"));
+  assert.equal(/private-query-\\d+/.test(log), false);
+});
+
 test("history is append-only: logs cannot be replaced and handoffs cannot be appended", async (t) => {
   const { vault } = await fixture(t);
   await writeMemory(vault, { path: "projects/alpha/logs/2026-11-10-qa-run.md", content: "# Run\n", mode: "create" }, { now: NOW });
@@ -122,9 +145,9 @@ test("project-scoped writes require a registered project and a valid role", asyn
   await assert.rejects(writeMemory(vault, { path: "projects/ghost/index.md", content: "x", mode: "append" }), { code: "project_not_found" });
   await assert.rejects(appendAgentMemory(vault, { project: "alpha", role: "janitor", title: "t", content: "c" }), { code: "invalid_role" });
   const result = await appendAgentMemory(vault, { project: "alpha", role: "builder", title: "Build invariant", content: "Run npm test first." }, { now: NOW });
-  assert.equal(result.path, "projects/alpha/agents/builder/memory.md");
-  const memory = await readMemory(vault, { path: "projects/alpha/agents/builder/memory.md" });
-  assert.match(memory.content, /## 2026-11-10 — Build invariant/);
+  assert.equal(result.memory.role, "builder");
+  const memory = await longMemoryRead(vault, { project: "alpha", role: "builder", id: result.id });
+  assert.equal(memory.content, "Run npm test first.");
 });
 
 test("handoff files are created once with a deterministic name", async (t) => {
@@ -194,7 +217,7 @@ test("createProject scaffolds once and registers the source directory exactly on
   assert.ok(listed.projects.some((p) => p.id === "gamma" && p.registered));
 });
 
-test("context returns profile, project index, role memory and recent logs without writing", async (t) => {
+test("context returns profile, project index, role scope and recent logs", async (t) => {
   const { root, vault } = await fixture(t);
   const repo = path.join(root, "alpha-repo");
   await mkdir(repo);
@@ -204,7 +227,7 @@ test("context returns profile, project index, role memory and recent logs withou
   assert.equal(context.project.projectId, "alpha");
   assert.match(context.user.profile.content, /User Profile/);
   assert.match(context.projectIndex.content, /Alpha/);
-  assert.equal(context.roleMemory.path, "projects/alpha/agents/builder/memory.md");
+  assert.deepEqual(context.roleMemory.results, []);
   assert.deepEqual(context.recentLogs, ["projects/alpha/logs/2026-11-09-qa-check.md"]);
 });
 
@@ -251,18 +274,16 @@ test("short-term memory is per project, replaced only with the hash that was rea
   assert.match((await shortMemoryRead(vault, { project: "alpha" })).content, /Step 2\./);
 });
 
-test("long-term memory is dated, written once, and never replaced", async (t) => {
+test("long-term memory is dated, stored in SQLite and never replaced in place", async (t) => {
   const { vault } = await fixture(t);
   const written = await longTermWrite(vault, { project: "alpha", slug: "retry-policy", title: "Retry policy", content: "Backoff with jitter." }, { now: NOW });
-  assert.equal(written.path, "projects/alpha/long-term/2026-11-10-retry-policy.md");
+  assert.equal(written.memory.slug, "2026-11-10-retry-policy");
   await assert.rejects(longTermWrite(vault, { project: "alpha", slug: "retry-policy", title: "Again", content: "x" }, { now: NOW }), { code: "exists" });
-  const read = await readMemory(vault, { path: written.path });
-  await assert.rejects(
-    writeMemory(vault, { path: written.path, content: "rewritten", mode: "replace", expectedHash: read.sha256 }),
-    { code: "append_only" },
-  );
+  const read = await longMemoryRead(vault, { project: "alpha", id: written.id });
+  assert.equal(read.content, "Backoff with jitter.");
   const other = await longTermWrite(vault, { project: "alpha", slug: "retry-policy", title: "Next day", content: "y" }, { now: new Date("2026-11-11T00:00:00Z") });
-  assert.equal(other.path, "projects/alpha/long-term/2026-11-11-retry-policy.md");
+  assert.notEqual(other.id, written.id);
+  assert.equal((await longMemoryRead(vault, { project: "alpha", id: written.id })).content, read.content);
 });
 
 test("worktree records are kept per branch, and linked worktrees resolve to their project", async (t) => {
@@ -398,7 +419,7 @@ test("context carries short-term memory, recent long-term notes and the current 
 
   const context = await getContext(vault, { cwd: repo });
   assert.match(context.shortTermMemory.content, /Resume at the parser\./);
-  assert.deepEqual(context.longTermRecent, ["projects/alpha/long-term/2026-11-10-parser-choice.md"]);
+  assert.equal(context.longTermRecent.find((memory) => memory.title === "Parser choice").content, "Use the streaming parser.");
   assert.equal(context.worktree.key, "feature-context");
   assert.equal(context.worktree.records.length, 1);
 });

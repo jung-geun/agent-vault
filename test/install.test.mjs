@@ -28,6 +28,7 @@ async function fixture(t) {
 function installerEnv(archive, resultPath) {
   return {
     ...process.env,
+    HOME: path.join(path.dirname(resultPath), "home"),
     AGENT_VAULT_ARCHIVE_URL: `file://${archive}`,
     AGENT_VAULT_INSTALL_TEST_RESULT: resultPath,
   };
@@ -65,6 +66,7 @@ done
   await chmod(curlPath, 0o755);
   const env = {
     ...process.env,
+    HOME: path.join(root, "home"),
     PATH: commandDir,
     INSTALL_TEST_ARCHIVE: archive,
     AGENT_VAULT_INSTALL_TEST_RESULT: resultPath,
@@ -135,4 +137,32 @@ test("installer rejects invalid archives before running the CLI", async (t) => {
     (error) => error.code !== 0 && /Downloaded archive is invalid/.test(error.stderr),
   );
   await assert.rejects(readFile(resultPath), { code: "ENOENT" });
+});
+
+test("installer requires a Node version with unflagged node:sqlite", async (t) => {
+  for (const version of ["20.19.0", "22.12.0", "22.13.0", "23.0.0", "23.4.0", "24.0.0"]) {
+    await t.test(version, async (t) => {
+      const { root, archive } = await fixture(t);
+      const resultPath = path.join(root, "result.json");
+      const { env } = await mockCurlEnv(root, archive, resultPath);
+      const nodePath = path.join(env.PATH, "node");
+      await rm(nodePath);
+      await writeFile(nodePath, `#!/bin/sh
+if [ "$1" = "-e" ]; then
+  exec '${process.execPath}' -e 'Object.defineProperty(process.versions, "node", { value: process.env.INSTALL_TEST_NODE_VERSION }); eval(process.argv[1]);' "$2"
+fi
+exec '${process.execPath}' "$@"
+`);
+      await chmod(nodePath, 0o755);
+      env.INSTALL_TEST_NODE_VERSION = version;
+      const run = () => execFileAsync("/bin/bash", [installerPath], { env, encoding: "utf8" });
+      if (["20.19.0", "22.12.0", "23.0.0"].includes(version)) {
+        await assert.rejects(run(), (error) => error.code === 1 && /Node\.js 22\.13\+ \(22\.x\) or 23\.4\+ is required/.test(error.stderr));
+        await assert.rejects(readFile(resultPath), { code: "ENOENT" });
+      } else {
+        await run();
+        assert.deepEqual(JSON.parse(await readFile(resultPath, "utf8")), ["install", "--global"]);
+      }
+    });
+  }
 });

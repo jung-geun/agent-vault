@@ -1,14 +1,61 @@
 {
   "name": "agent-vault-skill",
   "version": "1.0.0",
-  "description": "Centralized Obsidian LLM Wiki & Agent Memory System for OMP",
+  "description": "Evidence-driven agent memory with SQLite, MCP tools, task-boundary review, and an interactive skill installer",
   "type": "module",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jung-geun/agent-vault.git"
+  },
+  "homepage": "https://github.com/jung-geun/agent-vault#readme",
+  "bugs": {
+    "url": "https://github.com/jung-geun/agent-vault/issues"
+  },
+  "files": [
+    "SKILL.md",
+    "bin/vault-cli.mjs",
+    "bin/vault-mcp.mjs",
+    "bin/vault-recorder.mjs",
+    "bin/normalize-imported-links.mjs",
+    "lib/access-guard.mjs",
+    "lib/install-tui.mjs",
+    "lib/installer.mjs",
+    "lib/knowledge-review.mjs",
+    "lib/memory-db.mjs",
+    "lib/memory-store.mjs",
+    "lib/memory-tiers.mjs",
+    "lib/migration.mjs",
+    "lib/settings.mjs",
+    "lib/setup.mjs",
+    "lib/team-memory.mjs",
+    "lib/vault-core.mjs",
+    "integrations/omp/agent-vault-recorder.ts",
+    "integrations/omp/agent-vault.rule.md",
+    "integrations/obsidian/agent-vault-reading.css",
+    "integrations/obsidian/agent-vault-wiki/main.js",
+    "integrations/obsidian/agent-vault-wiki/main.template.js",
+    "integrations/obsidian/agent-vault-wiki/data.cjs",
+    "integrations/obsidian/agent-vault-wiki/manifest.json",
+    "integrations/obsidian/agent-vault-wiki/styles.css",
+    "integrations/obsidian/bases/Knowledge.base",
+    "integrations/obsidian/bases/Projects.base",
+    "docs/wiki-view-design.md",
+    "scripts/build-obsidian-plugin.mjs",
+    "install.sh"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
-    "node": ">=20"
+    "node": "^22.13.0 || >=23.4.0"
   },
   "scripts": {
-    "check": "bash -n install.sh && node --check bin/vault-cli.mjs && node --check bin/vault-mcp.mjs && node --check bin/normalize-imported-links.mjs && node --check lib/vault-core.mjs && node --check lib/migration.mjs && node --check lib/memory-store.mjs && node --check test/install.test.mjs && node --check test/migration.test.mjs && node --check test/cli.test.mjs && node --check test/memory-store.test.mjs && node --check test/mcp.test.mjs",
-    "test": "node --test"
+    "check": "bash -n install.sh && for file in bin/*.mjs lib/*.mjs test/*.mjs scripts/*.mjs; do node --check \"$file\" || exit; done && node scripts/build-obsidian-plugin.mjs --check && node --check integrations/obsidian/agent-vault-wiki/main.js",
+    "build:obsidian": "node scripts/build-obsidian-plugin.mjs",
+    "test": "node --test",
+    "prepack": "node scripts/build-obsidian-plugin.mjs --check"
   },
   "bin": {
     "agent-vault-skill": "./bin/vault-cli.mjs",

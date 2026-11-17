@@ -1,0 +1,75 @@
+/* agent-vault-managed: Agent Vault Wiki */
+.agent-vault-wiki {
+  padding: 0.75rem;
+}
+
+.agent-vault-wiki h2,
+.agent-vault-wiki h3,
+.agent-vault-wiki h4 {
+  line-height: 1.3;
+}
+
+.avw-controls {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.8rem;
+}
+
+.avw-controls input,
+.avw-controls select,
+.avw-controls button,
+.avw-result button,
+.avw-detail button {
+  width: 100%;
+  min-height: 2rem;
+}
+
+.avw-activity,
+.avw-detail {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 0.85rem;
+  padding-top: 0.7rem;
+}
+
+.avw-muted,
+.avw-result small {
+  color: var(--text-muted);
+  font-size: var(--font-smaller);
+}
+
+.avw-result {
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 0.65rem 0;
+}
+
+.avw-result small {
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.avw-result p {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
+}
+
+.avw-role-counts {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+}
+
+.avw-metadata {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.12rem 0.5rem;
+}
+
+.avw-metadata dt {
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+}
+
+
+.avw-metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

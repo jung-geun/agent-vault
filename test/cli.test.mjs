@@ -141,7 +141,7 @@ test("CLI installs and updates managed Obsidian assets without replacing user se
   const root = await mkdtemp(path.join(tmpdir(), "agent-vault-obsidian-install-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const vault = path.join(root, "vault");
-  await execFileAsync(process.execPath, [cliPath, "init", "--path", vault], { encoding: "utf8" });
+  await execFileAsync(process.execPath, [cliPath, "init", "--path", vault], { cwd: root, encoding: "utf8" });
   const appearancePath = path.join(vault, ".obsidian", "appearance.json");
   const enabledPath = path.join(vault, ".obsidian", "community-plugins.json");
   await writeFile(appearancePath, JSON.stringify({ showRibbon: false, enabledCssSnippets: ["user-theme"] }));
@@ -173,7 +173,7 @@ test("CLI preserves an unmarked Obsidian plugin and does not activate it", async
   const root = await mkdtemp(path.join(tmpdir(), "agent-vault-obsidian-preserve-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const vault = path.join(root, "vault");
-  await execFileAsync(process.execPath, [cliPath, "init", "--path", vault], { encoding: "utf8" });
+  await execFileAsync(process.execPath, [cliPath, "init", "--path", vault], { cwd: root, encoding: "utf8" });
   const pluginDir = path.join(vault, ".obsidian", "plugins", "agent-vault-wiki");
   await mkdir(pluginDir, { recursive: true });
   await writeFile(path.join(pluginDir, "main.js"), "// user-owned plugin\n");

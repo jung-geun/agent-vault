@@ -19,18 +19,35 @@ import {
   worktreeList,
   worktreeRecord,
   writeHandoff,
+  writeLog,
   writeMemory,
 } from "../lib/memory-store.mjs";
 import { appendAgentMemory, longTermWrite, longMemoryRead, getTieredContext as getContext } from "../lib/memory-tiers.mjs";
+import { saveSettings } from "../lib/settings.mjs";
 import { closeMemoryDbs } from "../lib/memory-db.mjs";
 
 const NOW = new Date("2026-11-10T00:00:00Z");
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "agent-vault-store-test-"));
-  t.after(async () => { closeMemoryDbs(); await rm(root, { recursive: true, force: true }); });
+  const home = path.join(root, "home");
+  const cwd = path.join(root, "cwd");
+  await mkdir(home);
+  await mkdir(cwd);
+  const previousHome = process.env.HOME;
+  const previousCwd = process.cwd();
+  process.env.HOME = home;
+  process.chdir(cwd);
+  t.after(async () => {
+    closeMemoryDbs();
+    process.chdir(previousCwd);
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(root, { recursive: true, force: true });
+  });
   const vault = path.join(root, "vault");
   await initVault(vault);
+  await saveSettings(vault, { weekly: { timeZone: "UTC", workdayStart: "00:00" } });
   await scaffoldProject(vault, "alpha", "Alpha");
   await writeFile(
     path.join(vault, "_meta", "projects-index.md"),
@@ -126,18 +143,19 @@ test("concurrent access events append complete lines without query text", async 
   assert.equal(/private-query-\\d+/.test(log), false);
 });
 
-test("history is append-only: logs cannot be replaced and handoffs cannot be appended", async (t) => {
+test("generic writes cannot bypass SQLite journal storage", async (t) => {
   const { vault } = await fixture(t);
-  await writeMemory(vault, { path: "projects/alpha/logs/2026-11-10-qa-run.md", content: "# Run\n", mode: "create" }, { now: NOW });
-  const read = await readMemory(vault, { path: "projects/alpha/logs/2026-11-10-qa-run.md" });
-  await assert.rejects(
-    writeMemory(vault, { path: "projects/alpha/logs/2026-11-10-qa-run.md", content: "# Rewritten\n", mode: "replace", expectedHash: read.sha256 }),
-    { code: "append_only" },
-  );
-  await assert.rejects(
-    writeMemory(vault, { path: "projects/alpha/agents/handoffs/2026-11-10-task-x.md", content: "more", mode: "append" }),
-    { code: "append_only" },
-  );
+  for (const rel of [
+    "projects/alpha/logs/2026-11-10-qa-run.md",
+    "projects/alpha/agents/handoffs/2026-11-10-task-x.md",
+    "projects/alpha/worktrees/main/2026-11-10-investigation-x.md",
+    "projects/alpha/long-term/2026-11-10-choice.md",
+  ]) {
+    for (const mode of ["create", "append", "replace"]) {
+      await assert.rejects(writeMemory(vault, { path: rel, content: "Do not write a legacy file.", mode }), { code: "sqlite_memory_required" });
+    }
+    await assert.rejects(readFile(path.join(vault, rel)), { code: "ENOENT" });
+  }
 });
 
 test("project-scoped writes require a registered project and a valid role", async (t) => {
@@ -150,14 +168,24 @@ test("project-scoped writes require a registered project and a valid role", asyn
   assert.equal(memory.content, "Run npm test first.");
 });
 
-test("handoff files are created once with a deterministic name", async (t) => {
+test("handoffs return durable refs and preserve distinct messages", async (t) => {
   const { vault } = await fixture(t);
-  const handoff = await writeHandoff(vault, { project: "alpha", slug: "refactor-api", from: "builder", to: "reviewer", title: "Review API", content: "Please review." }, { now: NOW });
-  assert.equal(handoff.path, "projects/alpha/agents/handoffs/2026-11-10-task-refactor-api.md");
-  await assert.rejects(
-    writeHandoff(vault, { project: "alpha", slug: "refactor-api", from: "builder", to: "reviewer", title: "Again", content: "x" }, { now: NOW }),
-    { code: "exists" },
-  );
+  const args = { project: "alpha", slug: "refactor-api", from: "builder", to: "reviewer", title: "Review API", content: "Please review." };
+  const handoff = await writeHandoff(vault, args, { now: NOW });
+  assert.equal(handoff.ref, `memory:${handoff.id}`);
+  assert.equal(handoff.created, true);
+  assert.equal(handoff.eventDate, "2026-11-10");
+  assert.equal(handoff.weekKey, "2026-46");
+  assert.equal(handoff.path, undefined);
+  const saved = await longMemoryRead(vault, { project: "alpha", id: handoff.id });
+  assert.equal(saved.kind, "handoff");
+  assert.match(saved.content, /Please review\./);
+  assert.match(saved.content, /builder/);
+  assert.match(saved.content, /reviewer/);
+  await assert.rejects(writeHandoff(vault, args, { now: NOW }), { code: "exists" });
+  const next = await writeHandoff(vault, { ...args, slug: "revised-api", content: "Review the revised API." }, { now: NOW });
+  assert.notEqual(next.id, handoff.id);
+  assert.equal((await longMemoryRead(vault, { project: "alpha", id: handoff.id })).content, saved.content);
 });
 
 test("search ranks title and path matches and respects scope", async (t) => {
@@ -221,14 +249,15 @@ test("context returns profile, project index, role scope and recent logs", async
   const { root, vault } = await fixture(t);
   const repo = path.join(root, "alpha-repo");
   await mkdir(repo);
-  await writeMemory(vault, { path: "projects/alpha/logs/2026-11-09-qa-check.md", content: "# QA\n", mode: "create" }, { now: NOW });
+  const log = await writeLog(vault, { project: "alpha", kind: "qa", slug: "check", title: "QA", content: "Targeted check passed." }, { now: NOW });
   const context = await getContext(vault, { cwd: repo, role: "builder" });
   assert.equal(context.vaultReady, true);
   assert.equal(context.project.projectId, "alpha");
   assert.match(context.user.profile.content, /User Profile/);
   assert.match(context.projectIndex.content, /Alpha/);
   assert.deepEqual(context.roleMemory.results, []);
-  assert.deepEqual(context.recentLogs, ["projects/alpha/logs/2026-11-09-qa-check.md"]);
+  assert.deepEqual(context.recentLogs, [log.ref]);
+  assert.match((await longMemoryRead(vault, { project: "alpha", id: log.id })).content, /Targeted check passed\./);
 });
 
 test("missing vault is reported as a state, not a crash, in context", async (t) => {
@@ -296,13 +325,15 @@ test("worktree records are kept per branch, and linked worktrees resolve to thei
   await git("git", ["-C", repo, "worktree", "add", "-q", "-b", "fix/retry", other]);
 
   const first = await worktreeRecord(vault, { cwd: repo, kind: "instruction", slug: "add-search", title: "Add search", content: "User asked for full-text search." }, { now: NOW });
-  assert.equal(first.path, "projects/alpha/worktrees/feature-add-search/2026-11-10-instruction-add-search.md");
-  const note = await readMemory(vault, { path: first.path });
-  assert.match(note.content, /Branch: feature\/add-search/);
-  assert.doesNotMatch(note.content, new RegExp(root.replaceAll("/", "\\/")));
+  assert.equal(first.ref, `memory:${first.id}`);
+  const note = await longMemoryRead(vault, { project: "alpha", id: first.id });
+  assert.equal(note.worktree, "feature-add-search");
+  assert.equal(note.kind, "worktree");
+  assert.match(note.content, /User asked for full-text search\./);
+  assert.equal(note.content.includes(root), false);
 
   const second = await worktreeRecord(vault, { cwd: other, kind: "implementation", slug: "retry-fix", title: "Retry fix", content: "Added backoff." }, { now: NOW });
-  assert.equal(second.path, "projects/alpha/worktrees/fix-retry/2026-11-10-implementation-retry-fix.md");
+  assert.equal((await longMemoryRead(vault, { project: "alpha", id: second.id })).worktree, "fix-retry");
 
   const listed = await worktreeList(vault, { cwd: repo });
   assert.deepEqual(listed.worktrees.map((w) => [w.key, w.records]), [["feature-add-search", 1], ["fix-retry", 1]]);
@@ -329,11 +360,10 @@ test("marker-file checkouts auto-register once with the scaffolded layout; unmar
   const first = await autoRegisterProject(vault, { cwd: marked }, { now: NOW });
   assert.equal(first.autoRegistered, true);
   assert.equal(first.projectId, "beta-app");
-  assert.deepEqual((await readdir(path.join(vault, "projects", "beta-app", "agents"))).sort(), ["builder", "coordinator", "handoffs", "investigator", "reviewer"]);
   assert.equal((await resolveProject(vault, { cwd: marked })).status, "resolved");
 
   const record = await worktreeRecord(vault, { cwd: marked, kind: "instruction", slug: "setup", title: "Setup", content: "Start." }, { now: NOW });
-  assert.match(record.path, /^projects\/beta-app\/worktrees\/main\//);
+  assert.equal((await longMemoryRead(vault, { project: "beta-app", id: record.id })).worktree, "main");
 
   const again = await autoRegisterProject(vault, { cwd: marked }, { now: NOW });
   assert.equal(again.autoRegistered, false);
@@ -403,7 +433,7 @@ test("an exclude write failure does not block records for an already registered 
   assert.equal(result.projectId, "alpha");
   assert.match(result.excludeWarning, /EISDIR/);
   const record = await worktreeRecord(vault, { cwd: repo, kind: "instruction", slug: "safe", title: "Safe", content: "Still recorded." }, { now: NOW });
-  assert.match(record.path, /^projects\/alpha\/worktrees\/main\//);
+  assert.equal((await longMemoryRead(vault, { project: "alpha", id: record.id })).worktree, "main");
 });
 
 
@@ -415,13 +445,13 @@ test("context carries short-term memory, recent long-term notes and the current 
   await commit(repo);
   await shortMemoryWrite(vault, { project: "alpha", content: "Resume at the parser." }, { now: NOW });
   await longTermWrite(vault, { project: "alpha", slug: "parser-choice", title: "Parser choice", content: "Use the streaming parser." }, { now: NOW });
-  await worktreeRecord(vault, { cwd: repo, kind: "investigation", slug: "parser", title: "Parser check", content: "Compared two parsers." }, { now: NOW });
+  const record = await worktreeRecord(vault, { cwd: repo, kind: "investigation", slug: "parser", title: "Parser check", content: "Compared two parsers." }, { now: NOW });
 
   const context = await getContext(vault, { cwd: repo });
   assert.match(context.shortTermMemory.content, /Resume at the parser\./);
   assert.equal(context.longTermRecent.find((memory) => memory.title === "Parser choice").content, "Use the streaming parser.");
   assert.equal(context.worktree.key, "feature-context");
-  assert.equal(context.worktree.records.length, 1);
+  assert.deepEqual(context.worktree.records, [record.ref]);
 });
 
 test("a linked worktree with its own registry row resolves to that row, not to its parent", async (t) => {
@@ -438,6 +468,6 @@ test("a linked worktree with its own registry row resolves to that row, not to i
   assert.equal(resolved.status, "resolved");
   assert.equal(resolved.projectId, "side");
   const record = await worktreeRecord(vault, { cwd: side, kind: "implementation", slug: "side", title: "Side work", content: "Changed the side checkout." }, { now: NOW });
-  assert.match(record.path, /^projects\/side\/worktrees\/feature-side\//);
+  assert.equal((await longMemoryRead(vault, { project: "side", id: record.id })).worktree, "feature-side");
   assert.equal((await resolveProject(vault, { cwd: repo })).projectId, "alpha");
 });

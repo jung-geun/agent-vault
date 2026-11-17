@@ -220,7 +220,7 @@ test("SQLite upgrades legacy hashes without folding case, whitespace, or tags", 
   closeMemoryDbs();
   const migrated = await openMemoryDb(file);
   assert.deepEqual(dedupeExact(migrated, { scope: "global" }), []);
-  assert.equal(migrated.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "4");
+  assert.equal(migrated.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "5");
   assert.equal(ensureReview(migrated, "global", "stale", 0).readyAt, null);
   for (const value of entries) assert.equal(insertMemory(migrated, value).duplicate, true);
 });
@@ -235,7 +235,7 @@ test("SQLite upgrades schema two without changing exact hashes or releasing lega
   db.exec("DROP TABLE review_feedback; ALTER TABLE reviews DROP COLUMN ready_at; UPDATE meta SET v = '2' WHERE k = 'schema'");
   closeMemoryDbs();
   const migrated = await openMemoryDb(file);
-  assert.equal(migrated.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "4");
+  assert.equal(migrated.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "5");
   assert.equal(migrated.prepare("SELECT content_hash FROM memories WHERE id = ?").get(memory.id).content_hash, hash);
   assert.equal(insertMemory(migrated, entry()).duplicate, true);
   assert.equal(getReview(migrated, review.id).ready_at, null);
@@ -260,13 +260,50 @@ test("SQLite upgrades schema three while preserving memories, counters, reviews,
   db.exec("DROP TABLE review_feedback; UPDATE meta SET v = '3' WHERE k = 'schema'");
   closeMemoryDbs();
   db = await openMemoryDb(file);
-  assert.equal(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "4");
-  assert.deepEqual(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all()), before);
+  assert.equal(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "5");
+  const after = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+  assert.deepEqual(after[0].map(({ event_date, week_key, ...row }) => row), before[0].map(({ event_date, week_key, ...row }) => row));
+  assert.equal(after[0][0].event_date, memory.createdAt.slice(0, 10));
+  assert.match(after[0][0].week_key, /^\d{4}-\d{2}$/);
+  assert.deepEqual(after.slice(1), before.slice(1));
   assert.deepEqual(reviewFeedback(db, review.id), []);
   assert.deepEqual(openReviews(db), [readyReview]);
   assert.deepEqual(db.prepare("PRAGMA foreign_key_list(review_feedback)").all().map((row) => row.table).sort(), ["memories", "reviews"]);
   assert.equal(queueMemoryFeedback(db, { key: review.key, memoryId: memory.id, trigger: "outdated", feedback: "Recheck migrated source." }).created, true);
 });
+
+test("SQLite schema four migration preserves state and backfills UTC journal metadata", async (t) => {
+  const root = await fixture(t);
+  const file = path.join(root, "memory.db");
+  let db = await openMemoryDb(file);
+  const memory = insertMemory(db, entry({ sourcePath: "legacy/four.md" }), new Date("2026-11-15T23:30:00Z")).memory;
+  touchRead(db, [memory.id]);
+  recordActivity(db, "global:::long", "write", DEFAULT_SETTINGS.review);
+  const review = ensureReview(db, "global:::long", "stale", 1);
+  queueMemoryFeedback(db, { key: review.key, memoryId: memory.id, trigger: "outdated", feedback: "Preserve historical evidence." });
+  startMemoryTask(db, { taskId: "schema-four-task", ownerPid: process.pid });
+  stageReviewAction(db, review.id, { action: "keep", note: "Preserve staged action." });
+  db.exec("DROP TABLE weekly_exports; DROP TABLE weekly_task_attributions; DROP INDEX memories_week; DROP INDEX memories_event_date");
+  for (const name of ["kind", "week_key", "event_date", "task_id", "worktree"]) db.exec(`ALTER TABLE memories DROP COLUMN ${name}`);
+  db.exec("UPDATE meta SET v = '4' WHERE k = 'schema'");
+  const tables = ["memories", "activity", "reviews", "memory_tasks", "review_actions", "review_feedback"];
+  const before = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+  closeMemoryDbs();
+  db = await openMemoryDb(file);
+  const after = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+  assert.equal(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "5");
+  assert.deepEqual(after[0].map(({ kind, week_key, event_date, task_id, worktree, ...row }) => row), before[0].map((row) => ({ ...row })));
+  assert.deepEqual(after.slice(1), before.slice(1));
+  assert.equal(getMemory(db, memory.id).kind, "knowledge");
+  assert.equal(getMemory(db, memory.id).eventDate, "2026-11-15");
+  assert.equal(getMemory(db, memory.id).weekKey, "2026-46");
+  assert.equal(getMemory(db, memory.id).taskId, null);
+  assert.equal(getMemory(db, memory.id).worktree, null);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM weekly_task_attributions").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM weekly_exports").get().n, 0);
+  assert.equal(insertMemory(db, entry({ sourcePath: "legacy/four.md" })).duplicate, true);
+});
+
 
 test("memory feedback binds exact source hashes and rearms only new immutable feedback", async (t) => {
   const root = await fixture(t);

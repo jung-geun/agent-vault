@@ -16,7 +16,21 @@ const NOW = new Date("2026-11-17T12:30:00Z");
 const OLD = new Date("2026-10-01T12:30:00Z");
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "vault-tiers-"));
-  t.after(async () => { closeMemoryDbs(); await rm(root, { recursive: true, force: true }); });
+  const home = path.join(root, "home");
+  const cwd = path.join(root, "cwd");
+  await mkdir(home);
+  await mkdir(cwd);
+  const previousHome = process.env.HOME;
+  const previousCwd = process.cwd();
+  process.env.HOME = home;
+  process.chdir(cwd);
+  t.after(async () => {
+    closeMemoryDbs();
+    process.chdir(previousCwd);
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(root, { recursive: true, force: true });
+  });
   const vault = path.join(root, "vault");
   await initVault(vault);
   await scaffoldProject(vault, "alpha", "Alpha");
@@ -80,7 +94,7 @@ test("sleep consolidates exact imported duplicates without losing originals", as
   const vault = await fixture(t);
   const target = { project: "alpha" };
   const entry = { ...target, title: "Retry invariant", content: "Use jitter.", tags: ["imported"] };
-  const one = await longTermWrite(vault, entry, { now: OLD, sourcePath: "source-one" });
+  const one = await longTermWrite(vault, entry, { now: NOW, sourcePath: "source-one" });
   const two = await longTermWrite(vault, entry, { now: NOW, sourcePath: "source-two" });
   assert.notEqual(one.id, two.id);
   await saveSettings(vault, { review: { thresholds: [1] } });
@@ -129,9 +143,10 @@ test("overlapping tasks and cancellation defer all automatic memory changes", as
   const firstTask = await beginMemoryTask(vault, { taskId: "task-a" });
   await beginMemoryTask(vault, { taskId: "task-b" });
   const entry = { ...target, title: "Shared invariant", content: "Keep these bytes until idle." };
-  const one = await longTermWrite(vault, entry, { sourcePath: "one" });
-  const two = await longTermWrite(vault, entry, { sourcePath: "two" });
-  await recordToolUse(vault, "long_memory_write", target, two);
+  await assert.rejects(longTermWrite(vault, entry), { code: "memory_task_ambiguous" });
+  const one = await longTermWrite(vault, { ...entry, taskId: "task-a" }, { sourcePath: "one" });
+  const two = await longTermWrite(vault, { ...entry, taskId: "task-b" }, { sourcePath: "two" });
+  const [ticket] = await recordToolUse(vault, "long_memory_write", target, two);
   const midTask = await getTieredContext(vault, { project: "alpha", role: "builder" });
   assert.equal(midTask.memoryMaintenance.contextRevision, firstTask.contextRevision);
   assert.ok(midTask.memoryReviews.every((review) => review.reviews.length === 0 && review.skillCandidates.length === 0));
@@ -147,7 +162,9 @@ test("overlapping tasks and cancellation defer all automatic memory changes", as
   await beginMemoryTask(vault, { taskId: "task-c" });
   const lastEnd = await endMemoryTask(vault, { taskId: "task-c", completed: true });
   assert.ok(lastEnd.contextRevision > firstTask.contextRevision);
-  assert.equal((await longMemoryRead(vault, { ...target, id: two.id })).status, "archived");
+  assert.ok(lastEnd.maintenance.flatMap((report) => report.released).includes(ticket.id));
+  assert.ok(lastEnd.maintenance.every((report) => report.archived.length === 0));
+  assert.equal((await longMemoryRead(vault, { ...target, id: two.id })).status, "active");
   assert.equal((await longMemoryRead(vault, { ...target, id: one.id })).status, "active");
   const duplicateEnd = await endMemoryTask(vault, { taskId: "task-c", completed: true });
   assert.equal(duplicateEnd.ended, false);
@@ -173,7 +190,7 @@ test("staged short-term promotion rechecks its source at task completion", async
   assert.deepEqual((await reviewMemory(vault, target, { now: NOW })).failedActions, [{ reviewId, error: "hash_mismatch" }]);
 });
 
-test("completion below the threshold does not refresh context or run maintenance", async (t) => {
+test("completion below the review threshold leaves review maintenance unchanged", async (t) => {
   const vault = await fixture(t);
   const started = await beginMemoryTask(vault, { taskId: "small-task" });
   const saved = await longTermWrite(vault, { project: "alpha", title: "Small task", content: "One operation." });

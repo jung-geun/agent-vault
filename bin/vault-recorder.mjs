@@ -22,7 +22,8 @@ try {
   if (operation === "record") {
     const registration = await autoRegisterProject(vault, { cwd, harness: "omp" });
     if (registration.excludeWarning) warnings.push(`Marker exclude update failed: ${registration.excludeWarning}`);
-    const result = await worktreeRecord(vault, { ...record, cwd });
+    const result = await worktreeRecord(vault, { ...record, cwd, taskId });
+    if (result.projection?.conflicts?.length) warnings.push("Journal is stored in SQLite; modified weekly Markdown was preserved.");
     try { await recordToolUse(vault, "worktree_record", { cwd }, result); }
     catch { warnings.push("Record saved, but usage review accounting failed."); }
   } else if (operation === "task-start") {
@@ -32,6 +33,10 @@ try {
     lifecycle = await endMemoryTask(vault, { taskId, completed });
   } else {
     throw new Error("Unknown recorder operation.");
+  }
+  for (const key of ["weekly", "persona"]) {
+    if (lifecycle?.[key]?.error) warnings.push(`${key} maintenance deferred: ${lifecycle[key].error}`);
+    if (lifecycle?.[key]?.conflicts?.length) warnings.push(`${key} maintenance preserved modified files.`);
   }
   process.stdout.write(JSON.stringify({ ok: true, warnings, ...lifecycle }));
 } catch (error) {

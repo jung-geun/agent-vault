@@ -78,7 +78,9 @@ export default function agentVaultRecorder(pi: ExtensionApi): void {
 
 	const record = async (ctx: RecorderContext, entry: Record<string, unknown>): Promise<void> => {
 		try {
-			const result = await runWorker({ operation: "record", vault: resolveVaultPath(undefined), cwd: ctx.cwd, record: entry });
+			const vault = resolveVaultPath(undefined);
+			const taskId = activeTask?.vault === vault && activeTask.cwd === ctx.cwd ? activeTask.taskId : undefined;
+			const result = await runWorker({ operation: "record", vault, cwd: ctx.cwd, record: entry, taskId });
 			for (const warning of result.warnings) ctx.ui?.notify?.(`agent-vault: ${warning}`, "warning");
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -89,7 +91,8 @@ export default function agentVaultRecorder(pi: ExtensionApi): void {
 	const endTask = async (ctx: RecorderContext, completed: boolean, task = activeTask): Promise<void> => {
 		if (!task || activeTask !== task) return;
 		try {
-			await runWorker({ operation: "task-end", ...task, completed });
+			const result = await runWorker({ operation: "task-end", ...task, completed });
+			for (const warning of result.warnings) ctx.ui?.notify?.(`agent-vault: ${warning}`, "warning");
 			if (activeTask === task) activeTask = undefined;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -100,7 +103,7 @@ export default function agentVaultRecorder(pi: ExtensionApi): void {
 	// Ordinary user prompts only; "revive" starts of parked subagents are not user instructions.
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (event.reason !== "prompt") return;
-		await endTask(ctx, false);
+		if (activeTask && (activeTask.cwd !== ctx.cwd || activeTask.vault !== resolveVaultPath(undefined))) await endTask(ctx, false);
 		if (!activeTask) {
 			const task = { taskId: randomUUID(), vault: resolveVaultPath(undefined), cwd: ctx.cwd };
 			try {

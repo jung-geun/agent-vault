@@ -1,6 +1,6 @@
 {
   "name": "agent-vault-skill",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Evidence-driven agent memory with SQLite, MCP tools, task-boundary review, and an interactive skill installer",
   "type": "module",
   "license": "UNLICENSED",
@@ -14,6 +14,7 @@
   },
   "files": [
     "SKILL.md",
+    "skills.sh.json",
     "bin/vault-cli.mjs",
     "bin/vault-mcp.mjs",
     "bin/vault-recorder.mjs",
@@ -26,6 +27,9 @@
     "lib/memory-store.mjs",
     "lib/memory-tiers.mjs",
     "lib/migration.mjs",
+    "lib/persona.mjs",
+    "lib/weekly-memory.mjs",
+    "lib/work-calendar.mjs",
     "lib/settings.mjs",
     "lib/setup.mjs",
     "lib/team-memory.mjs",

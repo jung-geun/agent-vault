@@ -10,7 +10,9 @@ import { initVault, scaffoldProject } from "../lib/vault-core.mjs";
 const serverPath = fileURLToPath(new URL("../bin/vault-mcp.mjs", import.meta.url));
 
 async function startServer(t, vault, cwd, env = {}, entrypoint = serverPath) {
-  const child = spawn(process.execPath, [entrypoint, "--path", vault], { cwd, env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+  const home = path.join(path.dirname(vault), "home");
+  await mkdir(home, { recursive: true });
+  const child = spawn(process.execPath, [entrypoint, "--path", vault], { cwd, env: { ...process.env, HOME: home, OMP_VAULT_PATH: vault, ...env }, stdio: ["pipe", "pipe", "pipe"] });
   t.after(() => child.kill());
   const lines = [];
   let buffer = "";
@@ -57,12 +59,23 @@ async function startServer(t, vault, cwd, env = {}, entrypoint = serverPath) {
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "agent-vault-mcp-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const previousHome = process.env.HOME;
+  const previousCwd = process.cwd();
+  const home = path.join(root, "home");
+  await mkdir(home);
+  process.env.HOME = home;
+  t.after(async () => {
+    process.chdir(previousCwd);
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(root, { recursive: true, force: true });
+  });
   const vault = path.join(root, "vault");
   await initVault(vault);
   await scaffoldProject(vault, "alpha", "Alpha");
   const repo = path.join(root, "alpha-repo");
   await mkdir(repo);
+  process.chdir(repo);
   await writeFile(
     path.join(vault, "_meta", "projects-index.md"),
     "| [Alpha](../projects/alpha/index.md) | alpha-repo | app | remote `origin` branch `main` | Node |\n",
@@ -86,12 +99,15 @@ test("tools/list exposes memory, project and agent operations with schemas", asy
   const server = await startServer(t, vault, repo);
   const reply = await server.request("tools/list", {});
   const names = reply.result.tools.map((tool) => tool.name).sort();
-  for (const required of ["vault_context", "memory_search", "memory_read", "memory_list", "memory_write", "project_resolve", "project_list", "project_scaffold", "agent_memory_read", "agent_memory_write", "agent_handoff", "log_write"]) {
+  for (const required of ["vault_context", "memory_search", "memory_read", "memory_list", "memory_write", "memory_query", "persona_observe", "persona_read", "persona_resolve", "memory_task_start", "project_resolve", "project_list", "project_scaffold", "agent_memory_read", "agent_memory_write", "agent_handoff", "log_write"]) {
     assert.ok(names.includes(required), `missing tool ${required}`);
   }
   for (const tool of reply.result.tools) {
     assert.equal(tool.inputSchema.type, "object", `${tool.name} needs an object schema`);
   }
+  const taskSchema = reply.result.tools.find((tool) => tool.name === "memory_task_start").inputSchema;
+  assert.equal(taskSchema.properties.parentTaskId.type, "string");
+  assert.equal(taskSchema.properties.resumeTaskId.type, "string");
 });
 
 test("write, search and read round-trip through the protocol with the content hash", async (t) => {
@@ -249,16 +265,21 @@ test("every tool works end-to-end when calls are awaited in order", async (t) =>
 
   const handoff = await server.call("agent_handoff", { project: "beta", slug: "review-build", from: "builder", to: "reviewer", title: "Review build", content: "Check the order note." });
   assert.equal(handoff.isError, false);
-  assert.match(handoff.body.path, /^projects\/beta\/agents\/handoffs\/\d{4}-\d{2}-\d{2}-task-review-build\.md$/);
+  assert.equal(handoff.body.ref, `memory:${handoff.body.id}`);
+  const handoffRead = await server.call("long_memory_read", { project: "beta", id: handoff.body.id });
+  assert.equal(handoffRead.body.kind, "handoff");
+  assert.match(handoffRead.body.content, /Check the order note\./);
 
   const log = await server.call("log_write", { project: "beta", kind: "qa", slug: "smoke", title: "Smoke", content: "Ran npm test: pass." });
   assert.equal(log.isError, false);
-  assert.match(log.body.path, /^projects\/beta\/logs\/\d{4}-\d{2}-\d{2}-qa-smoke\.md$/);
+  assert.equal(log.body.ref, `memory:${log.body.id}`);
+  const logs = await server.call("memory_query", { project: "beta", kind: "log" });
+  assert.deepEqual(logs.body.records.map((row) => row.id), [log.body.id]);
 
   const listed = await server.call("memory_list", { scope: "project", project: "beta" });
   const paths = listed.body.notes.map((n) => n.path);
   assert.ok(!paths.includes("projects/beta/agents/builder/memory.md"));
-  assert.ok(paths.includes(log.body.path));
+  assert.ok(paths.every((notePath) => !notePath.startsWith("projects/beta/logs/")));
 
   const projects = await server.call("project_list", {});
   const beta = projects.body.projects.find((p) => p.id === "beta");
@@ -309,7 +330,11 @@ test("memory tiers and worktree records are advertised and work in order through
 
   const record = await server.call("worktree_record", { kind: "instruction", slug: "tiers", title: "Tiers request", content: "User asked for tiers." });
   assert.equal(record.isError, false);
-  assert.match(record.body.path, /^projects\/alpha\/worktrees\/feature-tiers\/\d{4}-\d{2}-\d{2}-instruction-tiers\.md$/);
+  assert.equal(record.body.ref, `memory:${record.body.id}`);
+  const recordRead = await server.call("long_memory_read", { id: record.body.id });
+  assert.equal(recordRead.body.kind, "worktree");
+  assert.equal(recordRead.body.worktree, "feature-tiers");
+  assert.match(recordRead.body.content, /User asked for tiers\./);
 
   const worktrees = await server.call("worktree_list", {});
   assert.deepEqual(worktrees.body.worktrees.map((w) => [w.key, w.records]), [["feature-tiers", 1]]);
@@ -317,6 +342,7 @@ test("memory tiers and worktree records are advertised and work in order through
   const context = await server.call("vault_context", {});
   assert.match(context.body.shortTermMemory.content, /wire the tiers/);
   assert.equal(context.body.worktree.key, "feature-tiers");
+  assert.deepEqual(context.body.worktree.records, [record.body.ref]);
 });
 
 test("global, project and role memory remain isolated through MCP", async (t) => {
@@ -432,11 +458,7 @@ test("first context of the next task delivers ready evidence reviews once and st
   const taskB = (await server.call("memory_task_start", { taskId: "review-task-b" })).body.taskId;
   const firstB = (await server.call("vault_context", { role: "builder" })).body;
   const work = firstB.memoryMaintenance.reviewWork;
-  assert.deepEqual(Object.keys(work).sort(), ["instruction", "namespaces", "taskId"]);
   assert.equal(work.taskId, taskB);
-  assert.match(work.instruction, /source evidence/);
-  assert.match(work.instruction, /STAGE.*memory_review_resolve/);
-  assert.match(work.instruction, /successful task completion/);
   assert.equal(firstB.memoryMaintenance.contextRevision, endedA.contextRevision);
   assert.ok(firstB.memoryReviews.every((review) => review.reviews.length === 0));
   assert.deepEqual(work.namespaces.map((namespace) => ({
@@ -496,8 +518,6 @@ test("context claims only its actual task and reports disconnected or ambiguous 
   const disconnected = (await observer.call("vault_context", { role: "builder" })).body.memoryMaintenance;
   assert.equal(disconnected.lifecycle.status, "not_connected");
   assert.equal(disconnected.lifecycle.taskId, null);
-  assert.match(disconnected.lifecycle.instruction, /lifecycle hooks/);
-  assert.match(disconnected.lifecycle.instruction, /idle.*memory_sleep/);
   assert.equal(disconnected.reviewWork, null);
   const missing = (await owner.call("vault_context", { taskId: "missing-task", role: "builder" })).body.memoryMaintenance;
   assert.equal(missing.lifecycle.status, "not_connected");
@@ -531,8 +551,6 @@ test("disconnected context never releases pending work and explains explicit idl
   const context = (await server.call("vault_context", {})).body;
   assert.equal(context.memoryMaintenance.lifecycle.status, "not_connected");
   assert.equal(context.memoryMaintenance.reviewWork, null);
-  assert.match(context.memoryMaintenance.lifecycle.instruction, /memory_task_start.*memory_task_end/);
-  assert.match(context.memoryMaintenance.lifecycle.instruction, /idle.*memory_sleep/);
   assert.ok(context.memoryReviews.every((review) => review.reviews.length === 0));
   assert.deepEqual((await server.call("memory_review", {})).body.reviews, []);
   const released = (await server.call("memory_sleep", {})).body;
@@ -786,4 +804,91 @@ test("a late correction blocks an older usage-based skill proposal", async (t) =
   assert.equal(result.applied, false);
   assert.equal((await server.call("long_memory_search", { query: "Proposed procedure" })).body.results.length, 0);
   assert.deepEqual((await server.call("memory_review", {})).body.skillCandidates, []);
+});
+
+test("task parent and resume relations preserve attribution through MCP", async (t) => {
+  const { vault, repo } = await fixture(t);
+  const server = await startServer(t, vault, repo);
+  const parent = (await server.call("memory_task_start", { taskId: "parent-task" })).body;
+  const child = await server.call("memory_task_start", { taskId: "child-task", parentTaskId: parent.taskId });
+  assert.equal(child.isError, false);
+  assert.equal(child.body.weekKey, parent.weekKey);
+  const written = await server.call("long_memory_write", { taskId: "child-task", title: "Child finding", content: "Keep the parent business week." });
+  assert.equal(written.isError, false);
+  const stored = (await server.call("long_memory_read", { id: written.body.id })).body;
+  assert.equal(stored.taskId, "child-task");
+  assert.equal(stored.weekKey, parent.weekKey);
+  await server.call("memory_task_end", { taskId: "child-task", completed: false });
+  const resumed = await server.call("memory_task_start", { taskId: "resumed-child", resumeTaskId: "child-task" });
+  assert.equal(resumed.isError, false);
+  assert.equal(resumed.body.weekKey, parent.weekKey);
+  const log = await server.call("log_write", { taskId: "resumed-child", slug: "resumed-check", kind: "qa", title: "Resumed check", content: "The resumed task completed its check." });
+  assert.equal(log.isError, false);
+  assert.equal(log.body.projection.deferred, true);
+  await server.call("memory_task_end", { taskId: "resumed-child", completed: true });
+  await server.call("memory_task_end", { taskId: parent.taskId, completed: true });
+  const refused = await server.call("memory_task_start", { taskId: "invalid-resume", resumeTaskId: "resumed-child" });
+  assert.equal(refused.isError, true);
+  const queried = await server.call("memory_query", { kind: "log", week: parent.weekKey });
+  assert.deepEqual(queried.body.records.map((row) => row.id), [log.body.id]);
+  assert.equal(queried.body.records[0].taskId, "resumed-child");
+});
+
+test("persona tools stage explicit decisions and only next-task context uses accepted guidance", async (t) => {
+  const { vault, repo } = await fixture(t);
+  const server = await startServer(t, vault, repo);
+  const taskId = (await server.call("memory_task_start", { taskId: "persona-current" })).body.taskId;
+  const target = { scope: "project", project: "alpha" };
+  const guidance = "Ask one focused question before choosing between conflicting requirements.";
+  const observed = await server.call("persona_observe", {
+    ...target, taskId, category: "question_style", pattern: "focused-question",
+    guidance, sourceKind: "observation", evidence: "test-conversation:focused-question",
+  });
+  assert.equal(observed.isError, false);
+  assert.equal(observed.body.staged, true);
+  const profile = (await server.call("persona_read", target)).body;
+  assert.deepEqual(profile.active, []);
+  assert.equal(profile.pending[0].id, observed.body.patternId);
+  const stale = await server.call("persona_resolve", { ...target, patternId: observed.body.patternId, action: "accept", expectedHash: "0".repeat(64) });
+  assert.equal(stale.body.error, "hash_mismatch");
+  const decision = await server.call("persona_resolve", { ...target, patternId: observed.body.patternId, action: "accept", expectedHash: profile.hash });
+  assert.equal(decision.isError, false);
+  assert.equal(decision.body.staged, true);
+  const during = (await server.call("vault_context", { taskId })).body;
+  assert.ok(during.persona.profiles.every((entry) => !entry.context.includes(guidance)));
+  await server.call("memory_task_end", { taskId, completed: true });
+  const nextTask = (await server.call("memory_task_start", { taskId: "persona-next" })).body.taskId;
+  const next = (await server.call("vault_context", { taskId: nextTask })).body;
+  const applied = next.persona.profiles.find((entry) => entry.scope === "project");
+  assert.ok(applied.context.includes(guidance));
+  assert.ok(applied.context.length <= 2000);
+  assert.equal(applied.context.includes("test-conversation:focused-question"), false);
+  assert.deepEqual((await server.call("persona_read", { scope: "global" })).body.active, []);
+  await server.call("memory_task_end", { taskId: nextTask, completed: true });
+});
+
+test("memory_query bounds excerpts and pages without crossing scope or role", async (t) => {
+  const { vault, repo } = await fixture(t);
+  const server = await startServer(t, vault, repo);
+  const target = { project: "alpha", role: "builder" };
+  const saved = [];
+  for (let index = 0; index < 3; index++) {
+    const result = await server.call("long_memory_write", { ...target, title: `Bounded query ${index}`, content: `mcp-query-sentinel ${index} ` + "bounded evidence ".repeat(1500) });
+    assert.equal(result.isError, false);
+    saved.push(result.body.id);
+  }
+  const shared = await server.call("long_memory_write", { scope: "global", role: "builder", title: "Shared bounded query", content: "mcp-query-sentinel global" });
+  await server.call("long_memory_write", { project: "alpha", role: "reviewer", title: "Other role", content: "mcp-query-sentinel reviewer" });
+  const first = await server.call("memory_query", { ...target, query: "mcp-query-sentinel", limit: 2 });
+  const second = await server.call("memory_query", { ...target, query: "mcp-query-sentinel", limit: 2, offset: 2 });
+  assert.equal(first.isError, false);
+  assert.equal(first.body.hasMore, true);
+  assert.equal(second.body.hasMore, false);
+  const rows = [...first.body.records, ...second.body.records];
+  assert.deepEqual(rows.map((row) => row.id).sort((a, b) => a - b), saved);
+  assert.ok(rows.every((row) => row.truncated && row.content.length <= 2000 && row.ref === `memory:${row.id}`));
+  assert.ok(JSON.stringify(first.body).length < 8000);
+  const global = await server.call("memory_query", { scope: "global", role: "builder", query: "mcp-query-sentinel" });
+  assert.deepEqual(global.body.records.map((row) => row.id), [shared.body.id]);
+  assert.equal((await server.call("memory_query", { ...target, limit: 0 })).isError, true);
 });

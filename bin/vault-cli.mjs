@@ -21,8 +21,12 @@ Usage:
   vault-cli config --team-url <url> --team-id <id> [--token-env <name>] [--read-only]
   vault-cli config --team-file <absolute-local.sqlite> --team-id <id> [--read-only]
   vault-cli config --team-off | --review-thresholds 5,10,20 | --stale-days <days>
+  vault-cli config --markdown-months 1..6 [--timezone Asia/Seoul] [--workday-start 09:00]
+  vault-cli config --persona on|off [--persona-min-observations 3]
+  vault-cli memory query [--project <id> | --scope global] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--week YYYY-WW] [--query <text>]
+  vault-cli persona [--project <id> | --scope global] [--path <path>]
   vault-cli memory sleep [--project <id> | --scope global] [--role <role>] [--path <path>]
-  vault-cli memory migrate --project <id> [--path <path>]
+  vault-cli memory migrate --project <id> [--prune-legacy] [--path <path>]
   vault-cli init [--path <path>]
   vault-cli scaffold --project <id> [--title <title>] [--path <path>]
   vault-cli status [--project <id>] [--path <path>]
@@ -216,12 +220,14 @@ try {
     }
 
     case "config": {
-      const flags = commandFlags(1, ["--mode", "--harness", "--path", "--team-url", "--team-file", "--team-id", "--token-env", "--review-thresholds", "--stale-days"], ["--read-only", "--team-off"]);
+      const flags = commandFlags(1, ["--mode", "--harness", "--path", "--team-url", "--team-file", "--team-id", "--token-env", "--review-thresholds", "--stale-days", "--markdown-months", "--timezone", "--workday-start", "--persona", "--persona-min-observations"], ["--read-only", "--team-off"]);
       const settings = await configureSettings(targetVaultPath, {
         mode: flags["--mode"], harness: flags["--harness"],
         teamUrl: flags["--team-url"], teamFile: flags["--team-file"], teamId: flags["--team-id"],
         tokenEnv: flags["--token-env"], readOnly: flags["--read-only"], teamOff: flags["--team-off"],
         reviewThresholds: flags["--review-thresholds"], staleDays: flags["--stale-days"],
+        markdownMonths: flags["--markdown-months"], timeZone: flags["--timezone"], workdayStart: flags["--workday-start"],
+        persona: flags["--persona"], personaMinObservations: flags["--persona-min-observations"],
       });
       if (flags["--team-file"]) console.error("[WARN] Team SQLite requires one host and a local filesystem; never use NFS or sync folders.");
       console.log(JSON.stringify(settings, null, 2));
@@ -230,16 +236,34 @@ try {
 
     case "memory": {
       const action = args[1];
-      if (!["sleep", "migrate"].includes(action)) throw new Error("memory requires sleep or migrate.");
-      const flags = commandFlags(2, action === "sleep" ? ["--project", "--scope", "--role", "--path"] : ["--project", "--path"]);
+      if (!["sleep", "migrate", "query"].includes(action)) throw new Error("memory requires sleep, migrate or query.");
+      const values = action === "migrate" ? ["--project", "--path"] : ["--project", "--scope", "--role", "--path"];
+      if (action === "query") values.push("--from", "--to", "--week", "--query", "--kind", "--limit", "--offset");
+      const flags = commandFlags(2, values, action === "migrate" ? ["--prune-legacy"] : []);
       if (flags["--scope"] && flags["--scope"] !== "global") throw new Error("--scope must be global; use --project for project memory.");
       if (flags["--project"] && flags["--scope"]) throw new Error("Choose --project or --scope global, not both.");
       if (action === "migrate" && !flags["--project"]) throw new Error("memory migrate requires --project.");
       const tiers = await import("../lib/memory-tiers.mjs");
-      const options = { cwd: process.cwd(), project: flags["--project"], scope: flags["--scope"], role: flags["--role"] };
-      const result = action === "sleep"
-        ? await tiers.sleepMemory(targetVaultPath, options)
-        : await tiers.migrateLongMemory(targetVaultPath, options);
+      const options = { cwd: process.cwd(), project: flags["--project"], scope: flags["--scope"], role: flags["--role"], pruneLegacy: flags["--prune-legacy"] };
+      let result;
+      if (action === "query") {
+        const { queryWeeklyMemory } = await import("../lib/weekly-memory.mjs");
+        result = await queryWeeklyMemory(targetVaultPath, {
+          ...options, query: flags["--query"], from: flags["--from"], to: flags["--to"], week: flags["--week"], kind: flags["--kind"],
+          limit: flags["--limit"] === undefined ? undefined : Number(flags["--limit"]),
+          offset: flags["--offset"] === undefined ? undefined : Number(flags["--offset"]),
+        });
+      } else result = action === "sleep" ? await tiers.sleepMemory(targetVaultPath, options) : await tiers.migrateLongMemory(targetVaultPath, options);
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+
+    case "persona": {
+      const flags = commandFlags(1, ["--project", "--scope", "--path"]);
+      if (flags["--scope"] && flags["--scope"] !== "global") throw new Error("--scope must be global; use --project for a project persona.");
+      if (flags["--project"] && flags["--scope"]) throw new Error("Choose --project or --scope global, not both.");
+      const { readPersona } = await import("../lib/persona.mjs");
+      const result = await readPersona(targetVaultPath, { scope: flags["--project"] ? "project" : "global", project: flags["--project"], cwd: process.cwd() });
       console.log(JSON.stringify(result, null, 2));
       break;
     }

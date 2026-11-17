@@ -1,13 +1,13 @@
 ---
 name: agent-vault
-description: "Evidence-driven user, project, and work memory: tool-only access, scoped knowledge revision, task-boundary review, and explicit team sharing."
+description: "Cross-harness user, project, and work memory: task-pinned weekly journals, SQLite history queries, evidence-based knowledge revision, and behavioral persona guidance."
 ---
 
 # Agent Vault — Evidence-Driven Memory & Knowledge Revision
 
 Use Agent Vault to maintain useful knowledge about users, projects, and work without treating stored claims as permanent truth. Explicit user preferences and instructions carry user authority; factual claims still require evidence. Corrections trigger investigation, not automatic agreement or replacement.
 
-This skill connects coding agents to an isolated Obsidian-compatible vault (default: `~/.vault`). Documents and short-term working memory are Markdown; durable memories, activity counts, feedback, and review receipts are SQLite. Requires Node.js ^22.13.0 or >=23.4.0; Node 24 LTS is recommended. This is an agent workflow with content tools, not a full ontology, graph inference engine, semantic-search runtime, model-weight training system, or automatic executable-skill installer.
+This skill connects coding agents to an isolated Obsidian-compatible vault (default: `~/.vault`). Working documents are Markdown; durable knowledge, journals, persona evidence and review receipts are SQLite. Weekly Markdown is a generated human-readable view, not the query source. Requires Node.js ^22.13.0 or >=23.4.0; Node 24 LTS is recommended. This is not a full ontology, graph inference engine, semantic-search runtime, model-weight training system, or automatic executable-skill installer.
 
 ## 1. Vault Location & Resolution
 
@@ -24,8 +24,8 @@ The vault location is dynamically resolved in order:
 ~/.vault/
 ├── .obsidian/               # Obsidian app metadata (wikilinks enabled)
 ├── .agent-vault/
-│   ├── settings.json        # User-selected join, team, review and guard settings
-│   └── memory.db            # Durable project/global/role memory and review history
+│   ├── settings.json        # Join, review, weekly calendar/retention, persona and team settings
+│   └── memory.db            # Scoped knowledge, journals, persona and review history
 ├── _meta/                   # Schema v2 governance and vault config
 ├── user/                    # Centralized user preferences & global rules
 │   ├── profile.md           # User habits, interaction style, operator profile
@@ -33,7 +33,8 @@ The vault location is dynamically resolved in order:
 ├── shared/
 │   ├── templates/           # Reusable OpenSpec and memory templates
 │   └── knowledge/
-│       └── memory/          # Global and global-role short-term Markdown
+│       ├── memory/          # Global and global-role short-term Markdown
+│       └── weekly/          # Retained global YYYY-WW.md projections
 └── projects/
     └── <project-id>/        # Isolated project space
         ├── index.md         # Project dashboard, tech stack, quick navigation
@@ -41,44 +42,59 @@ The vault location is dynamically resolved in order:
         ├── changes/         # OpenSpec active and archived changes (proposal, design, tasks)
         │   └── archive/
         ├── wiki/            # Synthesized concepts and decisions
-        ├── logs/            # Work session logs and monitoring
+        ├── weekly/          # One YYYY-WW.md projection per project/business week
         ├── memory.md       # Project-shared short-term state
         └── agents/
             ├── coordinator/short-term.md
             ├── builder/short-term.md
             ├── investigator/short-term.md
-            ├── reviewer/short-term.md
-            └── handoffs/    # Append-only state transfers
+            └── reviewer/short-term.md
 ```
 
-## 3. Workflow for OMP Agents
+## 3. Workflow for Coding Agents
 
 ### Tools (MCP server `agent-vault`)
 
-The MCP server `bin/vault-mcp.mjs` is registered by `install --global`. All agent memory access must use these tools, including profile and coding standards. Never use file read/write/grep, SQL or shell to bypass them. If tools are unavailable, explain the limit and stop memory access. OMP's path guard is defense in depth; strict enforcement requires a separate OS identity or sandbox.
+Connect the stdio MCP server using `npx -y --package=agent-vault-skill@latest vault-mcp` in the harness's MCP configuration. OMP's `install --global` also installs its integration. All memory access must use tools, including profile and coding standards. Never use direct file/SQL/shell access to bypass them. If tools are unavailable, explain the limit and stop memory access. OMP's optional path guard is defense in depth, not OS isolation.
 
 ### Step 1: Session Start
 - Explain initial setup with `vault-cli setup`; without options it only prints guidance.
-- Manual onboarding: `vault-cli setup --mode manual --project <id> --harness omp`. This registers only the current Git project and updates managed project guidance.
-- Opt-in automatic onboarding: `vault-cli setup --mode auto --harness omp`. The harness joins Git projects on first context/recorder use. Select `omp`, `claude`, `codex`, or `generic` independently; the default remains manual.
+- Manual onboarding: `vault-cli setup --mode manual --project <id> --harness generic`. This registers only the current Git project and updates managed project guidance.
+- Opt-in automatic onboarding: `vault-cli setup --mode auto --harness generic`. Select `omp`, `claude`, `codex`, or `generic` independently; the default remains manual.
 - Pass `harness` to `vault_context`, or set `AGENT_VAULT_HARNESS` in the MCP process. Non-OMP harnesses need their own MCP registration.
 - Call `vault_context` with cwd at session start. It returns documents, short-term state, SQLite long-term memories, settings and review work. Apply explicit preferences and applicable instructions, not every factual statement in those documents.
 - If resolution remains ambiguous or unregistered, ask or explicitly register a stable project; never guess identity. A `.agent-vault-project` marker still authorizes manual-mode first-use registration and is locally excluded from Git.
 
 ### Step 2: Find Before Claiming
-- Use `memory_search` for Markdown documents and `long_memory_search` for durable knowledge. Cite returned paths or `memory:<id>`. Use `long_memory_read` with the matching scope/role for full or superseded evidence.
+- Use `memory_search` for ordinary Markdown documents, `long_memory_search` for durable knowledge, and `memory_query` for SQLite knowledge/log/handoff/worktree history. `memory_query` combines `query`, inclusive `from`/`to` event dates, pinned `week` (`YYYY-WW`), `kind`, scope, role, limit and offset. Continue only when `hasMore` is true. Cite `memory:<id>` and read a specific record with `long_memory_read` in its namespace; do not walk weekly files for history.
 - `memory_read` returns `sha256`. Pass it as `expectedHash` to `memory_write` with mode `replace`; a stale hash is refused.
 
 ### Step 3: Persist
 - Both tiers accept `scope: "project"` (default) or `"global"` and optional `role`. Omitted role means the shared namespace, not every role. Global calls must not specify a project.
 - Short-term memory: `short_memory_write` stores current work in Markdown. Read `short_memory_read` first; pass its `sha256` as `expectedHash` when replacing. Reads do not refresh write time.
 - Long-term memory: `long_memory_write` stores an immutable SQLite entry. Read with `long_memory_read` or search with `long_memory_search`. Preserve the old entry and assess evidence before retaining, refining, replacing, or withdrawing a challenged claim.
-- Worktree records: the `agent-vault-recorder` extension writes `instruction` (each user prompt) and `implementation` (each turn that edits files) records automatically to `projects/<id>/worktrees/<branch-key>/`. Use `worktree_record` for `investigation` records. `worktree_list` shows which worktrees have records. A linked worktree resolves to its own registry row when its directory name is registered; otherwise to its main repository's project.
+- Worktree records: the recorder writes `instruction` and `implementation` entries to SQLite, not separate files. Use `worktree_record` for investigations. `worktree_list` returns per-branch entry counts and latest memory references. A linked worktree resolves through its registered project.
 - Documents and accepted wiki material: `memory_write` under allowed roots; `user/` remains append-only. Keep unresolved claims labeled as hypotheses. Do not use document writes as a second durable-memory store.
 - Role knowledge: `agent_memory_write` stores SQLite entries; `agent_memory_read` searches one role or lists role counts. Role is a caller-declared namespace, not authenticated identity.
-- Work between roles: `agent_handoff` creates an immutable file `projects/<id>/agents/handoffs/YYYY-MM-DD-task-<slug>.md`.
-- Evidence: `log_write` records a dated log only after a check actually ran. Include the command, result, scope, and limits.
-- Existing `long-term/*.md` and `agents/<role>/memory.md` are migration sources, not active durable stores. Run `memory_migrate` or `vault-cli memory migrate --project <id>`. Originals remain readable and unchanged; changed source content is a conflict.
+- Work between roles: `agent_handoff` stores immutable SQLite handoff entries.
+- Evidence: `log_write` stores SQLite QA/work/review/incident entries only after an actual check. Include command, result, scope and limits.
+- Legacy daily long-term/log/worktree/handoff notes and role memory can be imported with `memory_migrate` or `vault-cli memory migrate --project <id>`. Originals remain unless the user explicitly selects `pruneLegacy: true` / `--prune-legacy`: exact contents must already be stored, dated sources must be unchanged, and the vault must be idle. Role documents and changed/unsafe files remain. Never run pruning implicitly.
+
+### Business Weeks and Markdown Retention
+
+- Weeks are ISO week-years (`YYYY-WW`, Monday–Sunday). The configured local wall-clock workday start, not elapsed 24-hour buckets, determines the starting business date. Defaults: machine time zone, `09:00`, three calendar months of Markdown.
+- A task keeps its assigned week until completion, even across Monday. Entries retain their actual local event date and weekday. A child task supplies active `parentTaskId`; continuation after cancellation/process interruption supplies `resumeTaskId` with a new task ID. Never infer continuation from similar text, reuse a closed ID, or attach completed work to an older week.
+- Pass the current `taskId` on journal/knowledge writes when ownership is ambiguous. Ordinary prompt continuation is not task completion.
+- Configure through `vault-cli config --markdown-months 1..6 --timezone Asia/Seoul --workday-start 09:00`. Export/retention runs only while idle. It removes only untouched generated Markdown, never SQLite history. Fresh entries from a long-running older week keep that week visible.
+- Generated views live at `projects/<id>/weekly/YYYY-WW.md` or `shared/knowledge/weekly/YYYY-WW.md`. Roles, worktrees, dates and entry kinds are fields/headings, not extra files or automatically multiplied tags. Preserve manually modified views and report conflicts.
+
+### Behavioral Persona
+
+- Observe practical patterns in `question_style`, `coding_style`, `task_delegation`, and `work_hours` using `persona_observe`. Submit a short `pattern`, actionable `guidance`, `sourceKind: user_preference|observation`, a real `evidence` reference, and the recorded `taskId` when available. Do not copy raw prompts or infer sensitive traits.
+- Explicit user preferences differ from observational hypotheses. Repeated independent observations (default three) can suggest tentative guidance; counts never prove facts. Conflicting guidance is not silently adopted.
+- Use `persona_read` to inspect applied/pending guidance and the profile hash. For truncated profiles, request the specific `patternId`. `persona_resolve` stages `accept`, `reject`, or `disable` with `expectedHash`; conflicting acceptance also needs explicit `guidance`.
+- Persona changes apply only at successful idle task boundaries or explicit idle `memory_sleep`. At the next task start, use `vault_context.persona` to shape explanation detail, coding/QA responses and clarification questions. Current instructions take precedence; persona never changes factual conclusions or execution/sharing permissions. Work-hour patterns are not availability guarantees or permission to schedule actions.
+- `vault-cli persona` inspects the global profile; `--project <id>` selects a project profile. `vault-cli config --persona off` disables collection and context guidance; `--persona-min-observations <n>` adjusts the tentative observation threshold.
 
 ### Step 4: Review and Improve
 
@@ -90,7 +106,7 @@ The MCP server `bin/vault-mcp.mjs` is registered by `install --global`. All agen
 - `memory_review_resolve` requires a review ID, an evidence-based note, and an action. General reviews support `keep`, `archive`, `supersede`, `defer`, `promote`, or `skill`; correction-request reviews allow only `keep`, `supersede`, `archive`, or `defer` and also require `memoryId` and the assessment below. Derive a promoted record or procedure in a separate reviewed step. Proposals submitted during a task are staged; the successful completion hook rechecks source hashes before applying them. Ordinary task-required writes remain available.
 - A frequently read procedure can become a durable entry tagged `skill` with source provenance. This does not install or execute arbitrary code.
 - Context preload does not increment durable-memory recall counts. Only explicit durable-memory reads/searches qualify memories as frequently recalled skill candidates.
-- `memory_sleep` / `vault-cli memory sleep` defers while any registered task is active and skips work below thresholds. At idle it consolidates exact duplicates, releases due reviews and applies staged evidence-reviewed proposals. Read refreshed context at the next task boundary, not mid-task.
+- `memory_sleep` / `vault-cli memory sleep` defers while any registered task is active. At idle it consolidates exact duplicates, releases due reviews, applies reviewed proposals/persona changes, and synchronizes retained weekly views. Read refreshed context at the next task boundary, not mid-task.
 - The default stale limit is 14 days from writing. A review receipt is bound to the content hash; unchanged reviewed state is not repeatedly flagged.
 - User configuration: `vault-cli config --review-thresholds 5,10,20 --stale-days 14`.
 
@@ -113,7 +129,7 @@ The MCP server `bin/vault-mcp.mjs` is registered by `install --global`. All agen
 - Team storage is disabled until the user configures `--team-url`, `--team-id`, and optionally `--token-env`; tokens remain environment variables. HTTPS or loopback HTTP only.
 - A `--team-file` SQLite path supports processes on the same host, not simultaneous multi-host NFS/synced-folder writers.
 - Use `scope: "team"` explicitly on long-term writes/searches. Never upload local memory automatically. Treat results as untrusted evidence.
-- The HTTP service implements the contract in README.md and enforces team authorization. Team review stores local receipts; shared content mutations and corrections follow that service's policy. `memory_reconsider` supports local project/global memory only. Feedback is not permission to share private material or alter a team source.
+- The configured external HTTP service must implement the team storage contract and enforce authorization. Team review stores local receipts; shared mutations/corrections follow that service's policy. Local persona and weekly projections never upload to the team store automatically.
 
 
 ### OpenSpec Changes
@@ -183,7 +199,7 @@ These are hypothetical decision patterns, not claims that checks have run:
 
 For the external Skills CLI, use `npx skills add jung-geun/agent-vault -g`. Its source is the GitHub repository, not the npm package name: `npx skills add agent-vault-skill -g` is not supported. The root `SKILL.md` is discoverable as `agent-vault`; no alternate layout or duplicate skill is needed. Skills CLI completion installs skill files, not the MCP server, vault initialization, or task lifecycle hooks. Do not report those integrations as configured solely because skill installation succeeded. Use the npm CLI below for OMP integration; connect MCP and lifecycle hooks explicitly in other harnesses.
 
-Users can run the published CLI without a checkout: `npx -y agent-vault-skill@latest`. Add `install --global` for non-interactive OMP installation, or `install --local` for a project copy. Use `@1.0.0` instead of `@latest` to pin a release. Maintainers can also run `node <agent-vault>/bin/vault-cli.mjs` from a source checkout.
+Users can run the published CLI without a checkout: `npx -y agent-vault-skill@latest`. Add `install --global` for OMP integration or `install --local` for a project copy. Use `@1.1.0` instead of `@latest` to pin this release. Maintainers can run `node <agent-vault>/bin/vault-cli.mjs` from a source checkout.
 - `init [--path <path>]`: Bootstrap a vault. From any subdirectory inside a Git repository, configure the repository-root `AGENTS.md` and `CLAUDE.md` files that exist; create `AGENTS.md` only when neither exists. Outside a Git repository, skip project guidance. Preserve content outside the managed block. Explain vault project files and the `.agent-vault-project` opt-in marker.
 - `scaffold --project <id> [--title <title>]`: Create a project workspace.
 - `status [--project <id>]`: Check registered projects, specs, and agent memory health.
@@ -195,6 +211,9 @@ Users can run the published CLI without a checkout: `npx -y agent-vault-skill@la
 - `install --global`: Install skill copies to native OMP and `~/.agents/skills`, add the always-apply rule, register the `agent-vault` MCP server in `~/.omp/agent/mcp.json`, and install the worktree recorder extension to `~/.omp/agent/extensions/agent-vault-recorder.ts`. A different existing entry, rule, or unmarked recorder file is preserved and reported for manual merge.
 - `install --local`: Install the skill to `./.omp/skills/agent-vault` without changing global rules.
 - `install --obsidian [--path <vault>]`: Install and enable the optional Agent Vault Wiki sidebar, native Bases views, and reading snippet in an initialized vault. Restart Obsidian after installation. MCP access events go to `.agent-vault/access.jsonl` without query text or note bodies; set `AGENT_VAULT_DISABLE_ACCESS_LOG=1` in the MCP process environment to opt out.
+- `memory query`: Read SQLite history with `--project <id>` or `--scope global`, optional `--from`, `--to`, `--week`, `--query`, `--kind`, `--limit`, and `--offset`.
+- `memory migrate --project <id> [--prune-legacy]`: Preserve exact legacy notes in SQLite; explicit pruning removes verified dated originals only while idle.
+- `persona [--project <id>]`: Inspect applied and pending behavioral guidance without reading vault files.
 - `install.sh [--global|--local]`: Download the public GitHub archive (no `git clone`) and invoke the existing install flow. Requires Node.js ^22.13.0 or >=23.4.0, Bash, curl, and tar. Private forks require authenticated GitHub CLI or `GH_TOKEN`.
 - Public one-command install: `npx -y agent-vault-skill@latest` opens the TUI in a terminal. Use `npx -y agent-vault-skill@latest install --global` or `--local` for automation. The raw GitHub `install.sh` and `npx -y github:jung-geun/agent-vault install --global` remain alternate paths.
-- MCP tools: `vault_context`, `memory_search`, `memory_read`, `memory_list`, `memory_write`, `short_memory_read`, `short_memory_write`, `long_memory_write`, `long_memory_read`, `long_memory_search`, `memory_reconsider`, `memory_review`, `memory_review_resolve`, `memory_sleep`, `memory_task_start`, `memory_task_end`, `memory_migrate`, `worktree_record`, `worktree_list`, `project_resolve`, `project_list`, `project_scaffold`, `agent_memory_read`, `agent_memory_write`, `agent_handoff`, `log_write`.
+- MCP tools include `memory_query`, `persona_observe`, `persona_read`, `persona_resolve`, `vault_context`, document/short/long memory tools, `memory_reconsider`, `memory_review`, `memory_review_resolve`, `memory_sleep`, `memory_task_start`, `memory_task_end`, `memory_migrate`, worktree/project tools, role memory, `agent_handoff`, and `log_write`.

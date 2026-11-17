@@ -5,12 +5,28 @@ Agent Vault는 코딩 에이전트용 MCP 서버, OMP 스킬과 Node.js CLI입�
 ## 요구 사항
 
 - Node.js 22.x는 22.13 이상, 23.x 이상은 23.4 이상이 필요합니다. Node.js 24 LTS를 권장합니다. 런타임 의존성은 내장 모듈뿐이며 SQLite에는 `node:sqlite`를 사용합니다.
-- 전역 설치와 세션 규칙 연동에는 OMP가 필요합니다.
+- OMP MCP·세션 규칙·hooks 자동 연동에는 OMP가 필요합니다. 다른 에이전트에도 Skills CLI로 스킬을 설치할 수 있습니다.
 - Obsidian 앱은 선택 사항입니다. vault는 Markdown과 `.obsidian` 설정으로 구성됩니다.
 
 ## 빠른 설치
 
-Node.js 24 LTS를 권장합니다. 저장소를 내려받거나 로컬 경로를 지정할 필요 없이 npm 배포본으로 설치할 수 있습니다.
+### Skills CLI로 설치
+
+Skills CLI의 에이전트 선택 화면에서 설치하려면 GitHub 저장소 이름을 사용합니다.
+
+```sh
+npx skills add jung-geun/agent-vault -g
+```
+
+`-g`는 사용자 전역 설치입니다. 생략하면 대화형 설치에서 범위를 선택할 수 있으며, `-y`를 추가하면 확인 프롬프트를 건너뜁니다. Skills CLI는 저장소 루트의 `SKILL.md`에서 `agent-vault` 스킬을 발견합니다.
+
+`npx skills add agent-vault-skill -g`는 지원되지 않습니다. `agent-vault-skill`은 npm 패키지 이름이며, `skills add`의 소스는 npm 패키지 이름이 아니라 `owner/repo`, Git URL 또는 로컬 경로입니다. [Skills CLI 소스 형식](https://github.com/vercel-labs/skills/blob/main/docs/commands.md#source-formats)을 참고하세요.
+
+Skills CLI의 설치 완료는 스킬 파일 설치를 뜻합니다. Agent Vault MCP 서버, vault 초기화, 하네스의 태스크 시작·종료 hooks까지 자동 구성하지는 않습니다. OMP 연동까지 설치하려면 아래 npm CLI의 `install --global`을 사용하세요. 다른 하네스의 MCP·hooks는 해당 하네스 설정에 연결해야 합니다.
+
+### OMP 연동을 포함한 npm 설치
+
+Node.js 24 LTS를 권장합니다. 저장소를 직접 내려받지 않고 Agent Vault 전용 설치기를 실행할 수 있습니다.
 
 대화형 설치:
 
@@ -46,9 +62,9 @@ bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/jung-geun/agen
 npx -y github:jung-geun/agent-vault install --local
 ```
 
-npm 배포본과 GitHub 경로 모두 같은 CLI 설치기를 사용합니다. npm 패키지는 런타임 파일을 명시적으로 포함하며, 테스트·로컬 지침·vault·자격 증명 파일은 배포하지 않습니다.
+npm 배포본, 위의 `install.sh` 및 `npx github:jung-geun/agent-vault` 경로는 같은 Agent Vault CLI 설치기를 사용합니다. `npx skills add`는 별도의 Skills CLI입니다. npm 패키지는 런타임 파일을 명시적으로 포함하며, 테스트·로컬 지침·vault·자격 증명 파일은 배포하지 않습니다.
 
-## 대화형 설치 TUI
+## Agent Vault 전용 설치 TUI
 
 터미널에서 대상 하네스, 설치 범위, 설치 방법을 선택할 수 있습니다.
 

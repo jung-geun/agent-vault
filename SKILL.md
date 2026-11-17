@@ -181,6 +181,8 @@ These are hypothetical decision patterns, not claims that checks have run:
 
 ## 5. CLI Commands & Tooling
 
+For the external Skills CLI, use `npx skills add jung-geun/agent-vault -g`. Its source is the GitHub repository, not the npm package name: `npx skills add agent-vault-skill -g` is not supported. The root `SKILL.md` is discoverable as `agent-vault`; no alternate layout or duplicate skill is needed. Skills CLI completion installs skill files, not the MCP server, vault initialization, or task lifecycle hooks. Do not report those integrations as configured solely because skill installation succeeded. Use the npm CLI below for OMP integration; connect MCP and lifecycle hooks explicitly in other harnesses.
+
 Users can run the published CLI without a checkout: `npx -y agent-vault-skill@latest`. Add `install --global` for non-interactive OMP installation, or `install --local` for a project copy. Use `@1.0.0` instead of `@latest` to pin a release. Maintainers can also run `node <agent-vault>/bin/vault-cli.mjs` from a source checkout.
 - `init [--path <path>]`: Bootstrap a vault. From any subdirectory inside a Git repository, configure the repository-root `AGENTS.md` and `CLAUDE.md` files that exist; create `AGENTS.md` only when neither exists. Outside a Git repository, skip project guidance. Preserve content outside the managed block. Explain vault project files and the `.agent-vault-project` opt-in marker.
 - `scaffold --project <id> [--title <title>]`: Create a project workspace.

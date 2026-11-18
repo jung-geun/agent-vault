@@ -1,6 +1,6 @@
 ---
 name: agent-vault
-description: "Cross-harness user, project, and work memory: task-pinned weekly journals, SQLite history queries, evidence-based knowledge revision, and behavioral persona guidance."
+description: "Use agent-vault setup/install/status/recall/remember/review/persona/config requests inside the agent. Cross-harness MCP memory with local onboarding, weekly journals, SQLite queries, and evidence-based behavioral guidance."
 ---
 
 # Agent Vault — Evidence-Driven Memory & Knowledge Revision
@@ -8,6 +8,35 @@ description: "Cross-harness user, project, and work memory: task-pinned weekly j
 Use Agent Vault to maintain useful knowledge about users, projects, and work without treating stored claims as permanent truth. Explicit user preferences and instructions carry user authority; factual claims still require evidence. Corrections trigger investigation, not automatic agreement or replacement.
 
 This skill connects coding agents to an isolated Obsidian-compatible vault (default: `~/.vault`). Working documents are Markdown; durable knowledge, journals, persona evidence and review receipts are SQLite. Weekly Markdown is a generated human-readable view, not the query source. Requires Node.js ^22.13.0 or >=23.4.0; Node 24 LTS is recommended. This is not a full ontology, graph inference engine, semantic-search runtime, model-weight training system, or automatic executable-skill installer.
+
+## In-Agent Commands
+
+Treat `agent-vault <action> ...` as a request to this skill, not a shell executable. A host may expose `/agent-vault`, `$agent-vault`, or a skill picker; use its actual supported invocation syntax, never invent a universal slash command. Natural language such as “Use agent-vault to set up this project” has the same meaning.
+
+Resolve `SKILL_DIR` from the activated skill's actual `SKILL.md` location. Do not assume a source checkout, a global installation, or the current working directory. All runtime files are bundled beside this skill. After installation, use the local Node CLI and MCP server; do not run `npx`, fetch a GitHub checkout, or reinstall on ordinary memory requests.
+
+| Request | Agent action |
+| --- | --- |
+| `setup` | Run the local CLI's read-only `setup --json`, establish the target project and harness, initialize with explicit choices, then perform the `install` connection flow below. |
+| `install` | Register or repair this installed bundle's local MCP connection in the current host. Preserve unrelated settings; do not default to OMP or copy skills to unrelated hosts. |
+| `status` | Inspect the host's available MCP tools, then call `vault_context`/`project_resolve` when connected. Report skill presence, MCP availability, project registration and lifecycle-hook status separately. |
+| `recall <request>` | Use `memory_query` for dated/weekly history, durable search/read for knowledge, and document search/read for ordinary notes. Cite the returned references. |
+| `remember <request>` | Choose working-state or durable memory, preserve scope and evidence, and call the corresponding MCP write tool. Do not manufacture verification or treat an observation as fact. |
+| `review <correction>` | Find the original entry, call `memory_reconsider`, then follow the evidence and task-boundary review rules. |
+| `persona <request>` | Use `persona_read`, `persona_observe`, or hash-guarded `persona_resolve` according to the user's intent. |
+| `config <preferences>` | Apply only requested configuration through the installed local CLI; do not enable sharing or auto-join implicitly. |
+| `sleep` | Call `memory_sleep` only at a genuine idle boundary; never end an active task just to make it run. |
+| `migrate` | Use `memory_migrate` for the selected project. Require an explicit request before pruning original files. |
+
+### One-Time Local Setup and Connection
+
+1. Invoke Node with an argument array: `[SKILL_DIR + "/bin/vault-cli.mjs", "setup", "--json"]`. This read-only result provides `runtime.cli` and `runtime.mcp` with absolute local paths. Administrative setup/configuration is allowed before MCP exists; reading or writing memory content still requires MCP.
+2. Use an existing resolved project ID or ask for one when unregistered. Default to manual registration; auto-join requires an explicit choice. Run `runtime.cli.command` with its existing `args`, followed by `setup --mode manual --project <chosen-id> --harness <actual-harness> --json`, in the user's Git project. Use `generic` for hosts without a dedicated setting. Do not print commands for the user to run when the agent can perform the authorized action itself.
+3. Register the returned `runtime.mcp` through the current host's documented MCP management tool, CLI, or configuration interface. Use `name` as the server key and adapt `type`, `command`, `args`, and `env` to the host's format. Keep argument boundaries and absolute paths; do not replace the local command with npx. Preserve other servers and custom settings. If a different `agent-vault` entry already exists, inspect the conflict before replacing it. Never edit the vault database/files to work around a missing connection.
+4. For OMP only, the local CLI's `install --global --agents omp,universal` installs its supported MCP/rule/lifecycle integration. Other hosts retain their own configuration format; do not write OMP files there. If host registration requires permission or reload, explain that one-time requirement and resume verification after it is satisfied.
+5. Verify the host actually exposes `vault_context`, `memory_query`, and the needed tools, then check project resolution. A returned descriptor or written config alone does not prove connection. Connect `memory_task_start`/`memory_task_end` to real lifecycle events when supported; otherwise report the limitation and use explicit idle maintenance. Never claim hooks are active merely because MCP is connected.
+
+When the local bundle moves or is updated, resolve its location again and repair the host connection if needed. If MCP is unavailable, help complete `install` and stop memory operations until it is ready; do not silently fall back to direct files, SQLite, or shell-based memory queries.
 
 ## 1. Vault Location & Resolution
 
@@ -55,10 +84,10 @@ The vault location is dynamically resolved in order:
 
 ### Tools (MCP server `agent-vault`)
 
-Connect the stdio MCP server using `npx -y --package=github:jung-geun/agent-vault#v1.1.1 vault-mcp` in the harness's MCP configuration. OMP's `install --global` also installs its integration. All memory access must use tools, including profile and coding standards. Never use direct file/SQL/shell access to bypass them. If tools are unavailable, explain the limit and stop memory access. OMP's optional path guard is defense in depth, not OS isolation.
+The host launches the installed local `bin/vault-mcp.mjs` with Node using the descriptor from `setup --json`. No registry download is needed at runtime. All memory access must use MCP tools, including profile and coding standards. Never use direct file/SQL/shell access to bypass them. OMP's optional path guard is defense in depth, not OS isolation.
 
 ### Step 1: Session Start
-- Explain initial setup with `vault-cli setup`; without options it only prints guidance.
+- Handle the in-agent `setup` request through the local setup/connection flow above; do not ask the user to repeatedly run package-manager commands.
 - Manual onboarding: `vault-cli setup --mode manual --project <id> --harness generic`. This registers only the current Git project and updates managed project guidance.
 - Opt-in automatic onboarding: `vault-cli setup --mode auto --harness generic`. Select `omp`, `claude`, `codex`, or `generic` independently; the default remains manual.
 - Pass `harness` to `vault_context`, or set `AGENT_VAULT_HARNESS` in the MCP process. Non-OMP harnesses need their own MCP registration.
@@ -197,9 +226,9 @@ These are hypothetical decision patterns, not claims that checks have run:
 
 ## 5. CLI Commands & Tooling
 
-For the external Skills CLI, use `npx skills add jung-geun/agent-vault -g`. Its source is the GitHub repository, not the npm package name: `npx skills add agent-vault-skill -g` is not supported. The root `SKILL.md` is discoverable as `agent-vault`; no alternate layout or duplicate skill is needed. Skills CLI completion installs skill files, not the MCP server, vault initialization, or task lifecycle hooks. Do not report those integrations as configured solely because skill installation succeeded. Use the npm CLI below for OMP integration; connect MCP and lifecycle hooks explicitly in other harnesses.
+Use the external Skills CLI only to install or update the bundle: `npx skills add jung-geun/agent-vault -g`. Its source is the repository, not the npm package name. The root skill is discoverable as `agent-vault`; do not create duplicate skills for subcommands. After installation, route in-agent requests through the command table and local runtime descriptor above. Skills installation alone does not prove MCP or hooks are connected.
 
-Run the release CLI without a checkout using `npx -y github:jung-geun/agent-vault#v1.1.1`. Add `install --global` for OMP integration or `install --local` for a project copy. This pinned GitHub command does not depend on npm publication. Maintainers can run `node <agent-vault>/bin/vault-cli.mjs` from a source checkout.
+The agent executes administrative commands with `node <actual-installed-skill-directory>/bin/vault-cli.mjs`. `setup --json` returns machine-readable local launch descriptors without downloading packages. Routine memory operations use MCP tools rather than shell commands.
 - `init [--path <path>]`: Bootstrap a vault. From any subdirectory inside a Git repository, configure the repository-root `AGENTS.md` and `CLAUDE.md` files that exist; create `AGENTS.md` only when neither exists. Outside a Git repository, skip project guidance. Preserve content outside the managed block. Explain vault project files and the `.agent-vault-project` opt-in marker.
 - `scaffold --project <id> [--title <title>]`: Create a project workspace.
 - `status [--project <id>]`: Check registered projects, specs, and agent memory health.
@@ -215,5 +244,5 @@ Run the release CLI without a checkout using `npx -y github:jung-geun/agent-vaul
 - `memory migrate --project <id> [--prune-legacy]`: Preserve exact legacy notes in SQLite; explicit pruning removes verified dated originals only while idle.
 - `persona [--project <id>]`: Inspect applied and pending behavioral guidance without reading vault files.
 - `install.sh [--global|--local]`: Download the public GitHub archive (no `git clone`) and invoke the existing install flow. Requires Node.js ^22.13.0 or >=23.4.0, Bash, curl, and tar. Private forks require authenticated GitHub CLI or `GH_TOKEN`.
-- Public one-command install: `npx -y github:jung-geun/agent-vault#v1.1.1` opens the TUI in a terminal. Add `install --global` or `--local` for automation. Prefer this pinned release over mutable branch-based installers.
+- For agent-driven setup/install, use the already-installed bundle and verify host connection. Reserve the external Skills CLI for a user-requested install or update, not ordinary runtime invocation.
 - MCP tools include `memory_query`, `persona_observe`, `persona_read`, `persona_resolve`, `vault_context`, document/short/long memory tools, `memory_reconsider`, `memory_review`, `memory_review_resolve`, `memory_sleep`, `memory_task_start`, `memory_task_end`, `memory_migrate`, worktree/project tools, role memory, `agent_handoff`, and `log_write`.

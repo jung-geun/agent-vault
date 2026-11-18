@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +48,56 @@ test("setup defaults to guided help without creating vault or integrations", asy
   assert.deepEqual(await readdir(root), before);
   assert.deepEqual(await readdir(home), []);
   await assert.rejects(readdir(vault), { code: "ENOENT" });
+});
+
+test("installed setup descriptors launch local memory tools without npm or a source checkout", async (t) => {
+  const { root, home, repo, vault, env } = await fixture(t);
+  const source = path.dirname(path.dirname(cli));
+  const bundle = path.join(home, "installed skills", "agent-vault");
+  const manifest = JSON.parse(await readFile(path.join(source, "package.json"), "utf8"));
+  for (const file of ["package.json", ...manifest.files]) {
+    const target = path.join(bundle, file);
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(path.join(source, file), target, { recursive: true });
+  }
+  const localCli = path.join(bundle, "bin", "vault-cli.mjs");
+  const before = await readdir(root);
+  const planned = JSON.parse((await execFileAsync(process.execPath, [localCli, "setup", "--json"], { cwd: repo, env, encoding: "utf8" })).stdout);
+  assert.equal(planned.changed, false);
+  assert.deepEqual(await readdir(root), before);
+  await assert.rejects(readdir(vault), { code: "ENOENT" });
+  await execFileAsync("git", ["init", "-q", "-b", "main", repo]);
+  const configured = JSON.parse((await execFileAsync(planned.runtime.cli.command, [
+    ...planned.runtime.cli.args, "setup", "--mode", "manual", "--project", "local-runtime", "--harness", "generic", "--json",
+  ], { cwd: repo, env, encoding: "utf8" })).stdout);
+  const { command, args, env: serverEnv } = configured.runtime.mcp;
+  const noExecutables = path.join(root, "empty-bin");
+  await mkdir(noExecutables);
+  const child = execFileAsync(command, args, {
+    cwd: root, env: { ...env, ...serverEnv, PATH: noExecutables }, encoding: "utf8", timeout: 15_000, maxBuffer: 256_000,
+  });
+  const call = (id, name, arguments_) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: arguments_ } });
+  const requests = [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "local-onboarding-test", version: "1" } } },
+    call(2, "memory_task_start", { taskId: "local-runtime-task" }),
+    call(3, "vault_context", { project: "local-runtime", role: "builder", taskId: "local-runtime-task" }),
+    call(4, "long_memory_write", { project: "local-runtime", role: "builder", taskId: "local-runtime-task", title: "Offline local memory", content: "Read this installed-runtime fixture without npm." }),
+    call(5, "memory_query", { project: "local-runtime", role: "builder", query: "installed-runtime" }),
+    call(6, "memory_task_end", { taskId: "local-runtime-task", completed: true }),
+  ];
+  child.child.stdin.end(requests.map((request) => JSON.stringify(request)).join("\n") + "\n");
+  const replies = (await child).stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(replies.map((reply) => reply.id), requests.map((request) => request.id));
+  for (const reply of replies) {
+    assert.equal(reply.error, undefined);
+    assert.notEqual(reply.result.isError, true);
+  }
+  const body = (id) => JSON.parse(replies.find((reply) => reply.id === id).result.content[0].text);
+  assert.equal(body(3).project.projectId, "local-runtime");
+  assert.equal(body(3).memoryMaintenance.lifecycle.status, "connected");
+  assert.equal(body(5).records[0].content, "Read this installed-runtime fixture without npm.");
+  assert.equal(body(6).ended, true);
+  assert.deepEqual((await readdir(home)).sort(), ["installed skills"]);
 });
 
 test("config prints default settings without writing them", async (t) => {

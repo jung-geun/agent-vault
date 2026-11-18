@@ -16,7 +16,7 @@ function printUsage() {
 Agent LLM Wiki Vault CLI (agent-vault)
 
 Usage:
-  vault-cli setup [--mode manual|auto] [--project <id>] [--harness omp|claude|codex|generic] [--path <path>]
+  vault-cli setup [--mode manual|auto] [--project <id>] [--harness omp|claude|codex|generic] [--path <path>] [--json]
   vault-cli config [--mode manual|auto] [--harness <name>] [--path <path>]
   vault-cli config --team-url <url> --team-id <id> [--token-env <name>] [--read-only]
   vault-cli config --team-file <absolute-local.sqlite> --team-id <id> [--read-only]
@@ -210,12 +210,12 @@ const targetVaultPath = resolveVaultPath(explicitPath);
 try {
   switch (command) {
     case "setup": {
-      const flags = commandFlags(1, ["--mode", "--project", "--harness", "--path", "--title"]);
+      const flags = commandFlags(1, ["--mode", "--project", "--harness", "--path", "--title"], ["--json"]);
       const result = await setupVault(targetVaultPath, {
         mode: flags["--mode"], project: flags["--project"], harness: flags["--harness"],
         title: flags["--title"], cwd: process.cwd(),
       });
-      console.log(result.guide ?? JSON.stringify(result, null, 2));
+      console.log(flags["--json"] ? JSON.stringify(result, null, 2) : result.guide ?? JSON.stringify(result, null, 2));
       break;
     }
 

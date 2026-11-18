@@ -16,9 +16,7 @@ npx skills add jung-geun/agent-vault -g
 
 `-g`는 사용자 전역 설치입니다. 설치 소스에는 npm 패키지명이 아닌 GitHub 저장소명 `jung-geun/agent-vault`를 사용합니다.
 
-스킬 설치 후 아래 사용 방법에 따라 프로젝트와 MCP를 연결하면 됩니다. CLI 예시는 npm 게시 상태와 무관하게 사용할 수 있는 GitHub 릴리스 `v1.1.1`로 고정합니다. 자체 설치 TUI는 `npx -y github:jung-geun/agent-vault#v1.1.1`로 실행하세요.
-
-공식 [Skills 커스터마이징](https://www.skills.sh/docs/customize)에 따라 `skills.sh.json`으로 저장소 소개를 구성합니다. 이 설정은 skills.sh의 표시만 바꾸며, 설치 방식이나 MCP·hooks를 자동으로 변경하지 않습니다.
+설치 후에는 에이전트의 스킬 호출 기능을 사용하거나, 채팅에서 **“agent-vault 스킬로 이 프로젝트를 설정해 줘”**라고 요청하세요. 이후 설정과 메모리 사용을 위해 터미널에서 `npx`를 반복 실행할 필요는 없습니다.
 
 ## 주요 기능
 
@@ -33,61 +31,29 @@ npx skills add jung-geun/agent-vault -g
 
 ## 사용 방법
 
-### 1. 프로젝트 연결
+아래는 **에이전트에게 보내는 요청**입니다. 터미널 명령이 아니며, `/agent-vault` 같은 호출 문법은 해당 환경이 지원할 때만 사용합니다.
 
-사용할 Git 프로젝트 폴더에서 실행합니다. `my-project`를 프로젝트 식별자로 바꾸세요.
+| 요청 예시 | 동작 |
+| --- | --- |
+| `agent-vault setup` | 현재 프로젝트와 저장소를 설정하고, 사용하는 환경의 로컬 MCP 연결을 진행합니다. |
+| `agent-vault install` | 이미 설치한 스킬의 MCP 연결을 등록하거나 복구합니다. |
+| `agent-vault status` | 스킬·MCP·프로젝트·태스크 hooks의 연결 상태를 확인합니다. |
+| `agent-vault recall 지난주 배포 결정` | 날짜·키워드로 기록을 찾아 근거와 함께 답합니다. |
+| `agent-vault remember 이번 결정과 이유` | 작업 상태나 장기 지식으로 구분해 기록합니다. |
+| `agent-vault review 이전 기록과 다른 결과가 나왔어` | 기존 근거와 새 증거를 비교해 재검토합니다. |
+| `agent-vault persona 내 응답 선호를 보여 줘` | 적용 중인 선호와 검토할 관찰을 보여 줍니다. |
+| `agent-vault config 주간 Markdown은 3개월, 업무 시작은 09:00` | 요청한 보존 기간과 업무 시간 설정을 적용합니다. |
 
-```sh
-npx -y github:jung-geun/agent-vault#v1.1.1 setup --mode manual --project my-project --harness generic
-```
+### MCP는 내부 동작 방식입니다
 
-기본 저장 위치는 `~/.vault`입니다. `generic`은 공통 환경용 설정이며, 환경별 설정을 분리하려면 `claude`, `codex`, `omp`를 지정할 수 있습니다.
+**스킬은 에이전트의 명령 안내이며, 저장·검색·검수는 로컬 MCP 서버가 담당합니다.** 에이전트가 설치된 번들의 CLI로 초기 설정을 수행하고, 하네스는 같은 번들의 MCP 서버를 Node로 실행합니다. 사용자가 매번 실행하거나 패키지를 다시 다운로드하는 구조가 아닙니다.
 
-### 2. MCP 서버 연결
+최초 연결에 권한 승인이나 에이전트 재시작이 필요한 환경은 한 번 안내합니다. MCP나 hooks를 자동 등록할 수 없는 환경에서는 필요한 단계와 제한을 설명하며, 연결되지 않은 상태를 완료로 표시하지 않습니다.
 
-사용 중인 에이전트에 `agent-vault`라는 stdio MCP 서버를 등록합니다. 실행 명령과 인자는 다음과 같으며, 설정 파일 형식은 각 환경에 맞게 적용하세요.
+### 메모리는 태스크 경계에서 갱신합니다
 
-```json
-{
-  "command": "npx",
-  "args": ["-y", "--package=github:jung-geun/agent-vault#v1.1.1", "vault-mcp"]
-}
-```
+업무 주차는 월~일 기준이며, 진행 중인 태스크는 주가 바뀌어도 원래 주차를 유지합니다. Markdown은 설정한 **1~6개월**만 보관하고 SQLite 기록은 계속 조회할 수 있습니다.
 
-스킬 설치만으로 MCP나 hooks가 자동 연결되지는 않습니다. OMP에서는 `npx -y github:jung-geun/agent-vault#v1.1.1 install --global`로 MCP·규칙·hooks 연동을 설치할 수 있습니다.
+persona와 검토된 메모리 변경은 정상 태스크 종료 후 유휴 시점에 반영합니다. hooks가 없는 환경에서는 작업을 마친 뒤 `agent-vault sleep`을 요청할 수 있습니다. 기존 일자별 파일은 `agent-vault migrate`로 가져오며, 원본 삭제는 별도의 명시적 요청이 있어야 합니다.
 
-### 3. 에이전트에게 요청
-
-MCP 연결 후에는 자연어로 요청하면 됩니다.
-
-> 이 프로젝트의 이전 결정과 진행 중인 작업을 불러와 줘.
->
-> 이번 결정의 이유와 검증 결과를 프로젝트 메모리에 남겨 줘.
->
-> 이전 기록과 다른 결과가 나왔어. 기존 근거와 새 증거를 비교해서 다시 평가해 줘.
-
-에이전트는 `vault_context`로 맥락을 읽고 메모리 도구로 검색·기록·재검토합니다. vault 파일을 직접 편집하는 대신 제공된 도구를 사용합니다.
-
-### 4. 태스크 종료 시 정리
-
-자동 정리를 사용하려면 환경의 **태스크 시작 hook**에 `memory_task_start`를, **태스크 종료 hook**에 반환된 `taskId`를 전달하는 `memory_task_end`를 연결합니다. 정상 완료에는 `completed: true`, 취소·오류에는 `completed: false`를 사용합니다. 매 응답 턴을 태스크 완료로 취급하지 마세요.
-
-각 태스크 시작 시 그 태스크의 새 `taskId`로 `vault_context`를 호출해 맥락과 준비된 검수 항목을 읽습니다. hooks를 지원하지 않는 환경에서는 실제 작업이 끝난 유휴 시점에 `memory_sleep`을 명시적으로 호출할 수 있습니다.
-
-### 5. 주간 메모리와 persona 설정
-
-```sh
-npx -y github:jung-geun/agent-vault#v1.1.1 config --markdown-months 3 --timezone Asia/Seoul --workday-start 09:00
-npx -y github:jung-geun/agent-vault#v1.1.1 memory query --project my-project --from 2026-11-01 --to 2026-11-30 --query "배포"
-npx -y github:jung-geun/agent-vault#v1.1.1 persona
-```
-
-주차는 월~일의 ISO 주차(`2026-47`)이며, 업무일 시작 이전은 이전 업무일로 계산합니다. 기본값은 시스템 시간대·09:00입니다. 하위 태스크는 `parentTaskId`, 중단된 작업의 재개는 `resumeTaskId`로 이전 업무 주차를 이어갑니다.
-
-Markdown 보존 기간은 **1~6개월**이며 기본 3개월입니다. 기간이 지난 내용은 생성된 주간 Markdown에서만 정리하고 SQLite 기록은 남깁니다. 직접 수정한 Markdown은 덮어쓰거나 삭제하지 않습니다.
-
-persona는 `persona_observe`로 관찰을 쌓고 `persona_read`·`persona_resolve`로 검토합니다. 명시적 선호와 잠정적 패턴을 구분하며, 변경은 정상 태스크 종료 후 유휴 시점에 반영합니다. `config --persona off`로 수집과 컨텍스트 반영을 끌 수 있습니다.
-
-기존 일자별 기록은 `memory migrate --project my-project`로 SQLite에 가져옵니다. 가져온 원본까지 정리하려면 유휴 상태에서 **명시적으로** `--prune-legacy`를 추가하세요. 내용 보존을 확인한 날짜별 원본만 제거하며, 변경된 파일과 역할별 문서는 유지합니다. 업그레이드 후에는 MCP 서버를 재시작하세요.
-
-도구 계약과 세부 운영 규칙은 [SKILL.md](SKILL.md)를 참고하세요.
+세부 도구 계약은 [SKILL.md](SKILL.md)를 참고하세요. 공식 [Skills 커스터마이징](https://www.skills.sh/docs/customize)은 저장소 소개 화면에 적용되며, 실행 중인 에이전트의 명령이나 hooks를 대신 등록하지는 않습니다.

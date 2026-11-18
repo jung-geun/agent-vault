@@ -1,59 +1,65 @@
 # Agent Vault
 
+**English** | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
+
 [![skills.sh](https://skills.sh/b/jung-geun/agent-vault)](https://skills.sh/jung-geun/agent-vault)
 
-**에이전트와 개발 환경이 바뀌어도 사용자·프로젝트·업무 지식을 이어서 활용하기 위한 메모리 하네스입니다.**
+**A memory harness that carries user, project, and work knowledge across agents and development environments.**
 
-단순히 대화를 저장하는 대신, 지식의 의미·관계·조건·도출 근거를 기록하고 새로운 증거에 따라 점진적으로 개선합니다. 특정 하네스에 종속되지 않도록 스킬, MCP 서버, CLI를 제공하며, Claude Code·Codex·Cursor·OMP 등 스킬과 MCP를 지원하는 환경에 연결할 수 있습니다. OMP는 지원 환경 중 하나이며 필수 요소가 아닙니다.
+Instead of merely storing conversations, Agent Vault records the meaning, relationships, conditions, and derivation evidence of knowledge, and improves it incrementally as new evidence arrives. It ships a skill, an MCP server, and a CLI so it is not tied to a single harness, and it connects to any environment that supports skills and MCP, such as Claude Code, Codex, Cursor, and OMP. OMP is one supported environment, not a requirement.
 
-## 설치
+## Installation
 
-Node.js 24 LTS를 권장합니다. 다음 명령에서 사용할 에이전트를 선택하세요.
+Node.js 24 LTS is recommended. Choose the agents you want to use when the command prompts you.
 
 ```sh
 npx skills add jung-geun/agent-vault -g
 ```
 
-`-g`는 사용자 전역 설치입니다. 설치 소스에는 npm 패키지명이 아닌 GitHub 저장소명 `jung-geun/agent-vault`를 사용합니다.
+`-g` installs for the current user globally. The install source is the GitHub repository `jung-geun/agent-vault`, not the npm package name.
 
-설치 후에는 에이전트의 스킬 호출 기능을 사용하거나, 채팅에서 **“agent-vault 스킬로 이 프로젝트를 설정해 줘”**라고 요청하세요. 이후 설정과 메모리 사용을 위해 터미널에서 `npx`를 반복 실행할 필요는 없습니다.
+After installing, use your agent's skill invocation feature, or ask in chat: **"Use the agent-vault skill to set up this project."** You do not need to run `npx` repeatedly in a terminal for setup or memory use.
 
-## 주요 기능
+## Features
 
-- **맥락 유지:** 사용자 선호, 프로젝트 결정, 작업 상태를 저장하고 다음 태스크에서 불러옵니다.
-- **메모리 분리:** 전역·프로젝트·역할별 범위를 나누고 단기 작업 상태와 장기 지식을 구분합니다.
-- **근거 기반 개선:** 사용자의 정정을 재검토 신호로 삼고, 기존 지식과 새 증거를 비교합니다. 근거가 부족하면 갱신을 보류합니다.
-- **태스크 경계에서 정리:** 사용 횟수와 노후화는 검토를 예약할 뿐입니다. 진행 중인 태스크를 끊지 않고 정상 종료·유휴 상태에서 검토된 변경을 적용합니다.
-- **로컬 저장:** 문서와 단기 메모리는 Markdown, 장기 메모리와 검수 이력은 SQLite에 저장합니다. Obsidian으로 Markdown 문서를 볼 수도 있습니다.
-- **주간 기록:** 지식·로그·인수인계를 `YYYY-WW.md` 하나에 날짜·요일별로 묶습니다. 진행 중인 태스크는 월요일이 지나도 시작한 업무 주차에 남고, SQLite에서는 날짜·키워드로 조회합니다.
-- **사용자 persona:** 질문·코딩·업무 지시·업무 시간 패턴을 근거와 함께 관리해 응답과 질문 방식을 조절합니다. 현재 요청이 항상 우선하며 관찰을 사실이나 권한으로 취급하지 않습니다.
-- **선택적 팀 공유:** 명시적으로 설정한 팀 저장소만 사용하며 개인 메모리를 자동으로 공유하지 않습니다.
+- **Persistent context:** Stores user preferences, project decisions, and working state, and recalls them in later tasks.
+- **Separated memory:** Splits global, project, and role scopes, and distinguishes short-term working state from long-term knowledge.
+- **Evidence-based improvement:** Treats user corrections as a signal to reevaluate, comparing existing knowledge with new evidence. Updates are deferred when evidence is insufficient.
+- **Cleanup at task boundaries:** Usage counts and age only schedule a review. Reviewed changes are applied at a normal task end or idle point, never by interrupting a running task.
+- **Local storage:** Documents and short-term memory live in Markdown; long-term memory and review history live in SQLite. You can browse the Markdown documents in Obsidian.
+- **Weekly journals:** Knowledge, logs, and handoffs are grouped by date and weekday into a single `YYYY-WW.md`. A task still running after Monday stays in the work week it started in, and SQLite can be queried by date or keyword.
+- **User persona:** Tracks question, coding, work-instruction, and work-hour patterns together with their evidence to tune answers and clarifying questions. The current request always takes priority, and observations are never treated as facts or permissions.
+- **Optional team sharing:** Uses only an explicitly configured team store and never shares personal memory automatically.
 
-## 사용 방법
+## Usage
 
-아래는 **에이전트에게 보내는 요청**입니다. 터미널 명령이 아니며, `/agent-vault` 같은 호출 문법은 해당 환경이 지원할 때만 사용합니다.
+The entries below are **requests you send to the agent**. They are not terminal commands, and invocation syntax such as `/agent-vault` applies only where your environment supports it.
 
-| 요청 예시 | 동작 |
+| Example request | What it does |
 | --- | --- |
-| `agent-vault setup` | 현재 프로젝트와 저장소를 설정하고, 사용하는 환경의 로컬 MCP 연결을 진행합니다. |
-| `agent-vault install` | 이미 설치한 스킬의 MCP 연결을 등록하거나 복구합니다. |
-| `agent-vault status` | 스킬·MCP·프로젝트·태스크 hooks의 연결 상태를 확인합니다. |
-| `agent-vault recall 지난주 배포 결정` | 날짜·키워드로 기록을 찾아 근거와 함께 답합니다. |
-| `agent-vault remember 이번 결정과 이유` | 작업 상태나 장기 지식으로 구분해 기록합니다. |
-| `agent-vault review 이전 기록과 다른 결과가 나왔어` | 기존 근거와 새 증거를 비교해 재검토합니다. |
-| `agent-vault persona 내 응답 선호를 보여 줘` | 적용 중인 선호와 검토할 관찰을 보여 줍니다. |
-| `agent-vault config 주간 Markdown은 3개월, 업무 시작은 09:00` | 요청한 보존 기간과 업무 시간 설정을 적용합니다. |
+| `agent-vault setup` | Sets up the current project and vault, and connects the local MCP server for your environment. |
+| `agent-vault install` | Registers or repairs the MCP connection of the already installed skill. |
+| `agent-vault status` | Checks the connection state of the skill, MCP, project, and task hooks. |
+| `agent-vault recall last week's deployment decision` | Finds records by date or keyword and answers with their evidence. |
+| `agent-vault remember this decision and its reason` | Records it as working state or long-term knowledge as appropriate. |
+| `agent-vault review this differs from the earlier record` | Compares the existing evidence with the new evidence and reevaluates. |
+| `agent-vault persona show my response preferences` | Shows the preferences in effect and the observations awaiting review. |
+| `agent-vault config keep weekly Markdown for 3 months, work starts at 09:00` | Applies the requested retention period and work-hour settings. |
 
-### MCP는 내부 동작 방식입니다
+### MCP is an internal mechanism
 
-**스킬은 에이전트의 명령 안내이며, 저장·검색·검수는 로컬 MCP 서버가 담당합니다.** 에이전트가 설치된 번들의 CLI로 초기 설정을 수행하고, 하네스는 같은 번들의 MCP 서버를 Node로 실행합니다. 사용자가 매번 실행하거나 패키지를 다시 다운로드하는 구조가 아닙니다.
+**The skill guides the agent's commands; storage, search, and review are handled by the local MCP server.** The agent performs initial setup with the CLI in the installed bundle, and the harness runs the MCP server from the same bundle with Node. Nothing needs to be run repeatedly by you, and no package is downloaded again.
 
-최초 연결에 권한 승인이나 에이전트 재시작이 필요한 환경은 한 번 안내합니다. MCP나 hooks를 자동 등록할 수 없는 환경에서는 필요한 단계와 제한을 설명하며, 연결되지 않은 상태를 완료로 표시하지 않습니다.
+Environments that need a permission approval or an agent restart for the first connection will tell you once. Where MCP or hooks cannot be registered automatically, the agent explains the required steps and limits, and never reports an unconnected state as complete.
 
-### 메모리는 태스크 경계에서 갱신합니다
+### Memory is updated at task boundaries
 
-업무 주차는 월~일 기준이며, 진행 중인 태스크는 주가 바뀌어도 원래 주차를 유지합니다. Markdown은 설정한 **1~6개월**만 보관하고 SQLite 기록은 계속 조회할 수 있습니다.
+Work weeks run Monday to Sunday, and a running task keeps its original week even when the week changes. Markdown is retained only for the configured **1–6 months**, while SQLite records stay queryable.
 
-persona와 검토된 메모리 변경은 정상 태스크 종료 후 유휴 시점에 반영합니다. hooks가 없는 환경에서는 작업을 마친 뒤 `agent-vault sleep`을 요청할 수 있습니다. 기존 일자별 파일은 `agent-vault migrate`로 가져오며, 원본 삭제는 별도의 명시적 요청이 있어야 합니다.
+Persona and reviewed memory changes are applied at an idle point after a normal task end. In environments without hooks, you can ask for `agent-vault sleep` after finishing your work. Existing daily files are imported with `agent-vault migrate`, and deleting the originals requires a separate, explicit request.
 
-세부 도구 계약은 [SKILL.md](SKILL.md)를 참고하세요. 공식 [Skills 커스터마이징](https://www.skills.sh/docs/customize)은 저장소 소개 화면에 적용되며, 실행 중인 에이전트의 명령이나 hooks를 대신 등록하지는 않습니다.
+### When hooks run and what each tool does
+
+In OMP, the installed hooks start a task when you send a prompt, record your instruction and each file-editing turn, and close the task when the agent finishes. Maintenance and persona updates run only after a successfully completed task when no other task is active. Other environments install no hooks and use `agent-vault sleep` instead. For the exact events, timing, every MCP tool, and failure behavior, see **[spec.md](spec.md)**.
+
+See [SKILL.md](SKILL.md) for the detailed tool contract. The official [Skills customization](https://www.skills.sh/docs/customize) applies to the repository's listing page; it does not register commands or hooks for a running agent.

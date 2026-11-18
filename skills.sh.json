@@ -4,7 +4,7 @@
   "groupings": [
     {
       "title": "Agent Memory",
-      "description": "Cross-harness memory with task-pinned weekly journals, SQLite history queries, and evidence-based behavioral guidance.",
+      "description": "Cross-harness memory with task-pinned weekly journals, optional SQL backends, and evidence-based behavioral guidance.",
       "skills": ["agent-vault"]
     }
   ]

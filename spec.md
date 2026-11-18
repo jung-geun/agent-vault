@@ -27,7 +27,7 @@ The skill is guidance, the MCP server is the only supported memory interface, an
 | Context and lifecycle | `task_end` | Close a task and run maintenance after successful completion if idle. |
 | Context and lifecycle | `maintain` | Run due review, weekly view, and persona maintenance when idle. |
 | Context and lifecycle | `migrate` | Import legacy memory into SQLite. |
-| Notes (Markdown documents) | `doc_search` | Search Markdown notes. |
+| Notes (Markdown documents) | `doc_search` | Search Markdown notes by keyword, regex, or character similarity. |
 | Notes (Markdown documents) | `doc_read` | Read a note and its content hash. |
 | Notes (Markdown documents) | `doc_list` | List notes in a scope. |
 | Notes (Markdown documents) | `doc_write` | Create, append to, or replace a note. |
@@ -35,9 +35,9 @@ The skill is guidance, the MCP server is the only supported memory interface, an
 | Working state | `short_write` | Write current working state, using a hash to guard replacement. |
 | Durable knowledge | `remember` | Store an immutable durable knowledge entry. |
 | Durable knowledge | `long_read` | Read a durable knowledge entry by ID. |
-| Durable knowledge | `long_search` | Search active durable knowledge in one namespace. |
+| Durable knowledge | `long_search` | Search active durable knowledge in one namespace by keyword, regex, or similarity. |
 | Durable knowledge | `recall` | Rank relevant knowledge for a natural-language task description. |
-| History and inspection | `history` | Query SQLite knowledge and journals by date, week, keyword, or kind. |
+| History and inspection | `history` | Query SQLite knowledge and journals by date, week, keyword, regex, similarity, or kind. |
 | History and inspection | `stats` | Inspect memory counts, review queues, active tasks, and effective settings. |
 | History and inspection | `diagnose` | Check vault and runtime health and report fixes without applying them. |
 | Roles and handoffs | `role_read` | Find durable entries for one role or list role counts. |
@@ -210,13 +210,13 @@ None of these rewrite or replace knowledge content, release tickets, or apply re
 
 | Tool | Does | Timing |
 | --- | --- | --- |
-| `doc_search`, `doc_list`, `doc_read` | Search, list, and read Markdown notes with hashes. | Read |
+| `doc_search`, `doc_list`, `doc_read` | Search (keyword, regex, or character similarity), list, and read Markdown notes with hashes. | Read |
 | `doc_write` | Create, append, or replace a note under `projects/`, `shared/knowledge/`, or `user/` (`user/` is append-only). Replace requires `expectedHash`. | Now |
 | `short_read` / `short_write` | Read or replace Markdown working state (project or global, optional role) with hash, last-written time and staleness. | Now |
 | `remember` | Store an immutable durable SQLite memory (project, global, optional role, or explicitly configured team). Returns `memory:id`. | Now |
-| `long_search` / `long_read` | Search active memories in one exact namespace, or read by id including archived and superseded sources. Results carry `knowledgeReview` warnings for unresolved corrections. | Read |
+| `long_search` / `long_read` | Search active memories in one exact namespace by keyword, regex, or similarity (section 11.3), or read by id including archived and superseded sources. Results carry `knowledgeReview` warnings for unresolved corrections. | Read |
 | `role_read` / `role_write` | Per-role durable entries. | Read / Now |
-| `recall` | Rank project and global knowledge for a natural-language task description (section 11). Counted as a read. | Read |
+| `recall` | Rank project and global knowledge for a natural-language task description (section 11); optional `regex` and `similar` modes (section 11.3). Counted as a read. | Read |
 
 ### 6.3 Journals and history
 
@@ -226,7 +226,7 @@ None of these rewrite or replace knowledge content, release tickets, or apply re
 | `worktree_list` | List worktrees with record counts and latest `memory:id`. | Read |
 | `log_write` | Immutable QA, work, review, or incident log. Use only after a check actually ran. | Now |
 | `handoff` | Immutable handoff between roles. | Now |
-| `history` | Query SQLite knowledge and journals by inclusive date range, pinned week, keyword and kind. Works after weekly Markdown has been pruned. No arbitrary SQL. | Read |
+| `history` | Query SQLite knowledge and journals by inclusive date range, pinned week, keyword, regex or similarity (section 11.3) and kind. Works after weekly Markdown has been pruned. No arbitrary SQL. | Read |
 
 Weekly Markdown (`projects/<id>/weekly/YYYY-WW.md`, `shared/knowledge/weekly/`) is a generated view of SQLite, written during maintenance, retained for 1 to 6 months (default 3). Only generated files that were not modified are deleted; modified files are preserved and reported as conflicts; SQLite rows are never deleted by retention.
 
@@ -309,7 +309,7 @@ Other hosts have no guard installed. The rule "memory is tool-only" is then enfo
 
 ## 11. Recall
 
-`recall` and automatic recall share one deterministic ranker (`lib/recall.mjs`). No model, embedding service or network is involved.
+`recall` and automatic recall share one deterministic ranker (`lib/recall.mjs`) in the default `keyword` mode; no model, embedding service or network is involved. `recall`, `long_search`, `history` and `doc_search` also accept `mode: "regex"` and `mode: "similar"` on explicit calls (section 11.3). Automatic recall never uses them.
 
 - **Terms:** the query is split into distinct terms; common English filler is dropped; Korean particles (for example `배포는`, `서버에서`) are stripped to the stem as an additional match form.
 - **Qualification:** a memory qualifies when it matches at least two distinct terms (one for a one-term query). This differs from `long_search`, where every term must match.
@@ -327,5 +327,37 @@ Stored memory text is untrusted content that reaches the model's context through
 ### 11.2 Deliberate non-goals
 
 - **No automatic extraction or retention of conversations.** Agent Vault records only what an agent writes through a tool, plus the instruction and edited-file facts the hooks capture. This keeps content explicit and reviewable; the cost is that recall quality depends on what the agent chose to write.
-- **No embeddings or LLM-backed processing,** so no text leaves the machine for memory work and results are reproducible.
+- **No LLM-backed processing and no remote embeddings.** No model generates, summarizes or rewrites memory text. Semantic search may use an optional embedding model, but only one reachable through a loopback endpoint (section 11.3), so no text leaves the machine; nothing is embedded on writes, keyword or regex searches, or automatic recall. Keyword and regex results are reproducible; embedding results depend on the configured model.
 - **No in-place edit or delete.** Corrections go through `reconsider` and the review receipt flow.
+
+### 11.3 Search modes: regex, character similarity, embeddings
+
+`doc_search`, `long_search`, `history` and `recall` take the same three optional arguments. Omitting `mode` keeps the keyword behavior described elsewhere in this document unchanged.
+
+| Argument | Values | Meaning |
+|---|---|---|
+| `mode` | `keyword` (default), `regex`, `similar` | `regex` matches a JavaScript regular expression against title, tags and content. `similar` ranks by similarity to the query text. |
+| `method` | `auto` (default), `embedding`, `chars` | Only with `mode: "similar"`. `auto` prefers embeddings and falls back to `chars`; `embedding` and `chars` force one method. |
+| `flags` | subset of `imsu`, default `iu` | Only with `mode: "regex"`. `g` and `y` are rejected. |
+| `limit` | 1–10, default 5 | Top results for `regex` and `similar`. These modes take no `offset` (`invalid_offset`) and return no `hasMore`. |
+
+Every non-keyword response adds `search: { mode, method, candidates, truncated, ... }`. `similar` results carry `similarity` (0–1, comparable only within one response); `regex` results carry `score` (match count) and `match: { field, count, excerpt }`. Errors: `invalid_regex`, `regex_timeout`, `invalid_mode`, `invalid_method`, `invalid_limit`, `invalid_offset`, `embedding_unavailable`, `unsupported_mode`.
+
+**Candidates.** Non-keyword modes score the newest 500 active entries per scope (`search.truncated` reports a larger scope), reading at most 20 000 characters of each text. `doc_search` regex scans every note in chunks instead. Team scope supports keyword mode only. Every returned knowledge entry counts as a read, as for keyword search. `history` applies its usual date, week, kind and role filters first.
+
+**Regex.** A pattern is at most 300 characters. It runs only inside a worker thread with a 2 000 ms timeout; on timeout the worker is terminated and the call fails with `regex_timeout`, so a catastrophic pattern such as `^(a+)+$` cannot stall the MCP server.
+
+**Character similarity (`chars`).** No model, network or stored state. Texts are NFKC-normalized and lower-cased, split into overlapping 2- and 3-character grams (code-point safe, so Hangul and CJK work), and scored by inverse-document-frequency-weighted containment of the query grams with a Dice tie-break. It finds partial identifiers, typos and shared word stems. It does not understand paraphrase: a query with no characters in common with the target finds nothing.
+
+**Embeddings.** Cosine similarity between the query vector and stored memory vectors. `embedding.provider` is `auto` (default), `off`, or `http` (`vault-cli config --embedding auto|off|http [--embedding-endpoint <url>] [--embedding-model <name>]`).
+
+- **Local only.** Endpoints must be `127.0.0.1`, `::1` or `localhost`; anything else is rejected at configuration time. Requests go to the OpenAI-compatible `POST /v1/embeddings`; redirects are refused.
+- **Detection (`auto`).** One 400 ms probe each of Ollama (`127.0.0.1:11434/api/tags`) and LM Studio (`127.0.0.1:1234/v1/models`), cached for 60 s, only when an explicit `similar` search, `memory embed`, `stats` or `diagnose` needs it. `http` never probes (except the single `diagnose` health request). Detection picks the first installed model from a fixed preference list. **Multilingual models rank first** (`multilingual-e5-small`, `granite-embedding:278m`, `embeddinggemma`, `bge-m3`, ...), then English-only tiny models (`all-minilm`, `snowflake-arctic-embed:22m`, `bge-small`, `nomic-embed-text`, ...). Set `--embedding-model` to override.
+- **Why multilingual first.** Measured once on the maintainer's machine with eight Korean-only paraphrase queries over eight Korean memories, the right memory ranked first 7 times with `granite-embedding:278m` (562 MB), once with `all-minilm` (45 MB) and twice with `chars`. On a mixed English/Korean set of 14 memories and eight queries: `all-minilm` 7, `granite-embedding:278m` 6, `chars` 4. These are small samples, not a benchmark; the only lesson is that an English-only model is not reliable for Korean. `diagnose` says so when such a model is active.
+- **Storage.** Vectors live in the `memory_embeddings` table of `memory.db` (schema 6), keyed by memory id, model and a hash of the exact embedded text. A 384-dimension float32 vector is 1 536 bytes, so 500 candidates are about 0.75 MB to compare; larger models store their own dimension. Edited text or a different model is re-embedded; unchanged text never is.
+- **Backfill.** A `similar` search embeds at most `embedding.backfillPerCall` (default 64) missing candidates before ranking. `vault-cli memory embed [--project <id> | --scope global] [--limit n]` embeds the rest explicitly. Observed on an Apple-silicon Mac with a local Ollama: about 5–7 ms per warm query and about 120–260 ms to embed 14 memories on first use.
+- **`auto` is all-or-nothing.** Scores from different methods are never mixed. If every candidate has a vector for the active model after backfill, the whole set is ranked by embedding. Otherwise the whole set is ranked by `chars` and `search.fallback` says why, with `search.pending` counting the missing vectors. A configured or detected server that is down also falls back. `method: "embedding"` never falls back: it fails with `embedding_unavailable`.
+- **Credential-shaped text.** A memory whose text matches the secret detector is never sent to the embedder. It is embedded from its title, or from the fixed label `[withheld: credential-shaped content]` when the title also matches, so it cannot block the rest of the scope; `search.withheld` counts such memories. A query that looks like a credential is rejected for embedding (`auto` falls back to `chars`). Use `regex` or `chars` to find a withheld memory.
+- **Notes.** `doc_search` supports `regex` and `chars` only. `method: "embedding"` fails with `unsupported_mode`, because embeddings cover SQLite memories, not Markdown files.
+
+`stats` and `diagnose` report the provider, model, and how many active knowledge entries are embedded. They never embed anything. With `http`, `stats` makes no network request and `diagnose` makes one health-only request.

@@ -30,7 +30,8 @@ After installing, use your agent's skill invocation feature, or ask in chat: **"
 - **Weekly journals:** Knowledge, logs, and handoffs are grouped by date and weekday into a single `YYYY-WW.md`. A task still running after Monday stays in the work week it started in, and SQLite can be queried by date or keyword.
 - **User persona:** Tracks question, coding, work-instruction, and work-hour patterns together with their evidence to tune answers and clarifying questions. The current request always takes priority, and observations are never treated as facts or permissions.
 - **Optional team sharing:** Uses only an explicitly configured team store and never shares personal memory automatically.
-- **Ranked recall and health checks:** `agent-vault recall` ranks memory for a task description locally, with no embeddings and no network. Optional automatic recall adds it to Claude Code and Codex prompts as background context, never as instructions. `agent-vault status` reports counts, the review queue, and a concrete fix for each problem.
+- **Ranked recall and health checks:** `agent-vault recall` ranks memory for a task description locally by keyword, with no network. Optional automatic recall adds it to Claude Code and Codex prompts as background context, never as instructions. `agent-vault status` reports counts, the review queue, and a concrete fix for each problem.
+- **Regex, similarity, and local-embedding search:** Searches accept `regex` and `similar` modes and return the top 5 (up to 10) results. `similar` uses a small embedding model running on your own machine (Ollama or LM Studio, loopback only) when one is available, and character similarity otherwise, so it also works with no model. Nothing is embedded unless you search with `similar`. For Korean or other non-English notes, use a multilingual model (for example `granite-embedding:278m`) instead of an English-only one.
 
 ## Usage
 

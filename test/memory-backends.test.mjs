@@ -220,7 +220,7 @@ test("SQLite upgrades legacy hashes without folding case, whitespace, or tags", 
   closeMemoryDbs();
   const migrated = await openMemoryDb(file);
   assert.deepEqual(dedupeExact(migrated, { scope: "global" }), []);
-  assert.equal(migrated.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "5");
+  assert.equal(migrated.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "6");
   assert.equal(ensureReview(migrated, "global", "stale", 0).readyAt, null);
   for (const value of entries) assert.equal(insertMemory(migrated, value).duplicate, true);
 });
@@ -235,7 +235,7 @@ test("SQLite upgrades schema two without changing exact hashes or releasing lega
   db.exec("DROP TABLE review_feedback; ALTER TABLE reviews DROP COLUMN ready_at; UPDATE meta SET v = '2' WHERE k = 'schema'");
   closeMemoryDbs();
   const migrated = await openMemoryDb(file);
-  assert.equal(migrated.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "5");
+  assert.equal(migrated.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "6");
   assert.equal(migrated.prepare("SELECT content_hash FROM memories WHERE id = ?").get(memory.id).content_hash, hash);
   assert.equal(insertMemory(migrated, entry()).duplicate, true);
   assert.equal(getReview(migrated, review.id).ready_at, null);
@@ -260,7 +260,7 @@ test("SQLite upgrades schema three while preserving memories, counters, reviews,
   db.exec("DROP TABLE review_feedback; UPDATE meta SET v = '3' WHERE k = 'schema'");
   closeMemoryDbs();
   db = await openMemoryDb(file);
-  assert.equal(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "5");
+  assert.equal(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "6");
   const after = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
   assert.deepEqual(after[0].map(({ event_date, week_key, ...row }) => row), before[0].map(({ event_date, week_key, ...row }) => row));
   assert.equal(after[0][0].event_date, memory.createdAt.slice(0, 10));
@@ -291,7 +291,7 @@ test("SQLite schema four migration preserves state and backfills UTC journal met
   closeMemoryDbs();
   db = await openMemoryDb(file);
   const after = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
-  assert.equal(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "5");
+  assert.equal(db.prepare("SELECT v FROM meta WHERE k = 'schema'").get().v, "6");
   assert.deepEqual(after[0].map(({ kind, week_key, event_date, task_id, worktree, ...row }) => row), before[0].map((row) => ({ ...row })));
   assert.deepEqual(after.slice(1), before.slice(1));
   assert.equal(getMemory(db, memory.id).kind, "knowledge");

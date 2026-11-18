@@ -24,7 +24,9 @@ Usage:
   vault-cli config --markdown-months 1..6 [--timezone Asia/Seoul] [--workday-start 09:00]
   vault-cli config --persona on|off [--persona-min-observations 3]
   vault-cli config --recall on|off [--recall-limit 5] [--recall-max-chars 2000]
+  vault-cli config --embedding auto|off|http [--embedding-endpoint <loopback-url>] [--embedding-model <name>]
   vault-cli memory recall --query <text> [--project <id> | --scope global] [--role <role>] [--limit 5]
+  vault-cli memory embed [--project <id> | --scope global] [--limit 500] [--path <path>]
   vault-cli memory stats [--project <id>] [--path <path>]
   vault-cli memory diagnose [--project <id>] [--path <path>]
   vault-cli hooks install|status|uninstall --host claude|codex [--local] [--dry-run] [--path <path>]
@@ -51,6 +53,8 @@ Options:
   --interactive           Choose agents, scope and method, then confirm exact paths
   --agents <ids>          Comma-separated agent targets
   --method <method>       Copy independent bundles or link to a stable Universal bundle
+  Memory recall/history search: [--mode keyword|regex|similar] [--method auto|embedding|chars] [--flags <imsu>] [--limit <n>]
+  Regex and similar mode return 5 results by default (1–10 allowed). --method applies to similar; --flags applies to regex.
   --obsidian              Install Agent Vault Wiki and Bases into the target vault
   init also adds or refreshes guidance in each existing AGENTS.md and CLAUDE.md at the Git repository root; creates AGENTS.md only when neither exists.
   setup without --mode prints guided help and makes no changes.
@@ -225,7 +229,7 @@ try {
     }
 
     case "config": {
-      const flags = commandFlags(1, ["--mode", "--harness", "--path", "--team-url", "--team-file", "--team-id", "--token-env", "--review-thresholds", "--stale-days", "--markdown-months", "--timezone", "--workday-start", "--persona", "--persona-min-observations", "--recall", "--recall-limit", "--recall-max-chars"], ["--read-only", "--team-off"]);
+      const flags = commandFlags(1, ["--mode", "--harness", "--path", "--team-url", "--team-file", "--team-id", "--token-env", "--review-thresholds", "--stale-days", "--markdown-months", "--timezone", "--workday-start", "--persona", "--persona-min-observations", "--recall", "--recall-limit", "--recall-max-chars", "--embedding", "--embedding-endpoint", "--embedding-model"], ["--read-only", "--team-off"]);
       const settings = await configureSettings(targetVaultPath, {
         mode: flags["--mode"], harness: flags["--harness"],
         teamUrl: flags["--team-url"], teamFile: flags["--team-file"], teamId: flags["--team-id"],
@@ -234,6 +238,7 @@ try {
         markdownMonths: flags["--markdown-months"], timeZone: flags["--timezone"], workdayStart: flags["--workday-start"],
         persona: flags["--persona"], personaMinObservations: flags["--persona-min-observations"],
         recall: flags["--recall"], recallLimit: flags["--recall-limit"], recallMaxChars: flags["--recall-max-chars"],
+        embedding: flags["--embedding"], embeddingEndpoint: flags["--embedding-endpoint"], embeddingModel: flags["--embedding-model"],
       });
       if (flags["--team-file"]) console.error("[WARN] Team SQLite requires one host and a local filesystem; never use NFS or sync folders.");
       console.log(JSON.stringify(settings, null, 2));
@@ -242,28 +247,36 @@ try {
 
     case "memory": {
       const action = args[1];
-      if (!["maintain", "migrate", "history", "recall", "stats", "diagnose"].includes(action)) throw new Error("memory requires maintain, migrate, history, recall, stats or diagnose.");
+      if (!["maintain", "migrate", "history", "recall", "embed", "stats", "diagnose"].includes(action)) throw new Error("memory requires maintain, migrate, history, recall, embed, stats or diagnose.");
       const values = ["--project", "--path"];
       if (["maintain", "history", "recall"].includes(action)) values.push("--scope", "--role");
-      if (action === "history") values.push("--from", "--to", "--week", "--query", "--kind", "--limit", "--offset");
-      if (action === "recall") values.push("--query", "--limit");
+      if (action === "history") values.push("--from", "--to", "--week", "--kind", "--offset");
+      if (action === "recall" || action === "history") values.push("--query", "--limit", "--mode", "--method", "--flags");
+      if (action === "embed") values.push("--scope", "--limit");
       const flags = commandFlags(2, values, action === "migrate" ? ["--prune-legacy"] : []);
       if (flags["--scope"] && flags["--scope"] !== "global") throw new Error("--scope must be global; use --project for project memory.");
       if (flags["--project"] && flags["--scope"]) throw new Error("Choose --project or --scope global, not both.");
       if (action === "migrate" && !flags["--project"]) throw new Error("memory migrate requires --project.");
       const tiers = await import("../lib/memory-tiers.mjs");
       const options = { cwd: process.cwd(), project: flags["--project"], scope: flags["--scope"], role: flags["--role"], pruneLegacy: flags["--prune-legacy"] };
+      const searchOptions = {
+        query: flags["--query"], mode: flags["--mode"], method: flags["--method"], flags: flags["--flags"],
+        limit: flags["--limit"] === undefined ? undefined : Number(flags["--limit"]),
+      };
       let result;
       if (action === "history") {
         const { queryWeeklyMemory } = await import("../lib/weekly-memory.mjs");
         result = await queryWeeklyMemory(targetVaultPath, {
-          ...options, query: flags["--query"], from: flags["--from"], to: flags["--to"], week: flags["--week"], kind: flags["--kind"],
-          limit: flags["--limit"] === undefined ? undefined : Number(flags["--limit"]),
+          ...options, ...searchOptions, from: flags["--from"], to: flags["--to"], week: flags["--week"], kind: flags["--kind"],
           offset: flags["--offset"] === undefined ? undefined : Number(flags["--offset"]),
         });
       } else if (action === "recall") {
         if (!flags["--query"]) throw new Error("memory recall requires --query.");
-        result = await tiers.recallMemory(targetVaultPath, { ...options, query: flags["--query"], limit: flags["--limit"] === undefined ? undefined : Number(flags["--limit"]) });
+        result = await tiers.recallMemory(targetVaultPath, { ...options, ...searchOptions });
+      } else if (action === "embed") {
+        if (flags["--limit"] !== undefined && !/^\d+$/.test(flags["--limit"])) throw new Error("--limit must be an integer from 1 to 5000.");
+        const { embedMemoryScope } = await import("../lib/similar-search.mjs");
+        result = await embedMemoryScope(targetVaultPath, { ...options, limit: searchOptions.limit });
       } else if (action === "stats" || action === "diagnose") {
         const inspect = await import("../lib/memory-inspect.mjs");
         result = await (action === "stats" ? inspect.memoryStats : inspect.diagnoseMemory)(targetVaultPath, { cwd: process.cwd(), project: flags["--project"] });

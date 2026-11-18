@@ -30,6 +30,7 @@ npx skills add jung-geun/agent-vault -g
 - **每周记录：** 将知识、日志和交接按日期和星期汇总到单个 `YYYY-WW.md` 中。进行中的任务即使过了周一，也仍留在其开始的工作周内，在 SQLite 中可按日期或关键词查询。
 - **用户 persona：** 连同依据一起管理提问、编码、工作指示和工作时间的模式，用来调整回答和提问方式。当前请求始终优先，观察结果不会被当作事实或权限。
 - **可选的团队共享：** 只使用明确配置的团队存储，不会自动共享个人记忆。
+- **排序式回忆与健康检查：** `agent-vault recall` 不使用嵌入或网络，在本地按任务描述对记忆排序。可选的自动回忆只会把结果作为背景信息附加到 Claude Code 和 Codex 的提示中，不会被当作指令。`agent-vault status` 会报告数量、审查队列以及每个问题的具体处理方法。
 
 ## 使用方法
 
@@ -60,6 +61,6 @@ persona 和已审查的记忆变更会在任务正常结束后的空闲时刻生
 
 ### hooks 何时运行以及各工具的作用
 
-在 OMP 中，已安装的 hooks 会在你发送提示时启动任务，记录你的指示和每个修改文件的回合，并在智能体结束时关闭任务。维护和 persona 更新只会在任务正常完成且没有其他任务进行时运行。其他环境不会安装 hooks，需要改为请求 `agent-vault sleep`。确切的事件与时机、全部 MCP 工具以及失败时的行为，请参阅 **[spec.md](spec.md)**。
+在 OMP、Claude Code 和 Codex 中，hooks 会在你发送提示时启动任务，记录你的指示和每个修改文件的回合，并在智能体结束时关闭任务。请智能体执行 `agent-vault install` 即可完成设置：对 Claude Code 和 Codex 会运行 `vault-cli hooks install --host claude|codex`，之后 Codex 会要求你在 `/hooks` 中审查并信任这些 hooks 一次。维护和 persona 更新只会在任务正常完成且没有其他任务进行时运行。Cursor 等其他环境不会安装 hooks，需要改为请求 `agent-vault sleep`。确切的事件与时机、全部 MCP 工具、实际验证过的范围以及失败时的行为，请参阅 **[spec.md](spec.md)**。
 
 详细的工具约定请参阅 [SKILL.md](SKILL.md)。官方的 [Skills 自定义](https://www.skills.sh/docs/customize)作用于仓库的介绍页面，不会为正在运行的智能体注册命令或 hooks。

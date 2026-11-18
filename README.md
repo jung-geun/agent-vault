@@ -30,6 +30,7 @@ After installing, use your agent's skill invocation feature, or ask in chat: **"
 - **Weekly journals:** Knowledge, logs, and handoffs are grouped by date and weekday into a single `YYYY-WW.md`. A task still running after Monday stays in the work week it started in, and SQLite can be queried by date or keyword.
 - **User persona:** Tracks question, coding, work-instruction, and work-hour patterns together with their evidence to tune answers and clarifying questions. The current request always takes priority, and observations are never treated as facts or permissions.
 - **Optional team sharing:** Uses only an explicitly configured team store and never shares personal memory automatically.
+- **Ranked recall and health checks:** `agent-vault recall` ranks memory for a task description locally, with no embeddings and no network. Optional automatic recall adds it to Claude Code and Codex prompts as background context, never as instructions. `agent-vault status` reports counts, the review queue, and a concrete fix for each problem.
 
 ## Usage
 
@@ -60,6 +61,6 @@ Persona and reviewed memory changes are applied at an idle point after a normal 
 
 ### When hooks run and what each tool does
 
-In OMP, the installed hooks start a task when you send a prompt, record your instruction and each file-editing turn, and close the task when the agent finishes. Maintenance and persona updates run only after a successfully completed task when no other task is active. Other environments install no hooks and use `agent-vault sleep` instead. For the exact events, timing, every MCP tool, and failure behavior, see **[spec.md](spec.md)**.
+OMP, Claude Code and Codex run hooks that start a task when you send a prompt, record your instruction and each file-editing turn, and close the task when the agent finishes. Ask the agent for `agent-vault install` to set them up: for Claude Code and Codex it runs `vault-cli hooks install --host claude|codex`, and Codex then asks you to review and trust the hooks once with `/hooks`. Maintenance and persona updates run only after a successfully completed task when no other task is active. Other environments such as Cursor install no hooks and use `agent-vault sleep` instead. For the exact events, timing, every MCP tool, what has been verified live, and failure behavior, see **[spec.md](spec.md)**.
 
 See [SKILL.md](SKILL.md) for the detailed tool contract. The official [Skills customization](https://www.skills.sh/docs/customize) applies to the repository's listing page; it does not register commands or hooks for a running agent.

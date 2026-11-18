@@ -20,14 +20,20 @@ The skill is guidance, the MCP server is the only supported memory interface, an
 
 ## 2. Hook Support by Host
 
-| Host | Hooks installed by Agent Vault | How task boundaries work |
+| Host | Install | How task boundaries work |
 | --- | --- | --- |
-| OMP | Yes. `install --global` installs `~/.omp/agent/extensions/agent-vault-recorder.ts`, the user rule, and an MCP entry with `AGENT_VAULT_HARNESS=omp`. | Automatic, described in section 3. |
-| Claude Code, Codex, Cursor, other | No. Agent Vault does not write hook configuration for these hosts. | Only if the host exposes lifecycle events and the agent or user wires `memory_task_start` / `memory_task_end` to them. Otherwise `vault_context` reports `lifecycle.status: "not_connected"` and maintenance runs only through an explicit `memory_sleep` while all tasks are idle. |
+| OMP | `vault-cli install --global` installs `~/.omp/agent/extensions/agent-vault-recorder.ts`, the user rule, and an MCP entry with `AGENT_VAULT_HARNESS=omp`. | Automatic, section 3.1. |
+| Claude Code | `vault-cli hooks install --host claude` writes command hooks to `~/.claude/settings.json` (`--local`: `.claude/settings.local.json`). | Automatic, section 3.2. |
+| Codex | `vault-cli hooks install --host codex` writes `~/.codex/hooks.json` (`--local`: `.codex/hooks.json`). Codex runs a new or changed hook only after you review and trust it with `/hooks`; Agent Vault never writes trust state. | Automatic once trusted, section 3.2. |
+| Cursor, other | None. | Only if the host exposes lifecycle events and the agent or user wires `memory_task_start` / `memory_task_end` to them. Otherwise `vault_context` reports `lifecycle.status: "not_connected"` and maintenance runs only through an explicit `memory_sleep` while all tasks are idle. |
 
-The agent must verify hook status with `vault_context` (`memoryMaintenance.lifecycle.status` is `connected`, `ambiguous`, or `not_connected`). A written config or an MCP connection alone does not prove that hooks are active.
+`vault-cli hooks status --host claude|codex` reports each event as `current`, `drifted` (owned but changed, for example after the bundle moved) or `missing`. `hooks uninstall` removes only entries whose command runs this package's `vault-hook.mjs`; every other hook and setting is preserved. A malformed config file is never overwritten. Re-run `hooks install` after moving or updating the bundle, because the hook command contains absolute paths.
 
-## 3. OMP Hook Events
+The agent must verify the live state with `vault_context` (`memoryMaintenance.lifecycle.status` is `connected`, `ambiguous`, or `not_connected`). A written config or an MCP connection alone does not prove that hooks are active.
+
+## 3. Hook Events
+
+### 3.1 OMP
 
 The extension subscribes to five host events. Persistence is delegated to `bin/vault-recorder.mjs`, a Node child process, because OMP's extension host (Bun) has no `node:sqlite`. Each request is sent on stdin (limit 64 KB, timeout 60 s) and never on the command line.
 
@@ -45,6 +51,26 @@ Key properties:
 - Records are best effort. A failure (no resolved project, credential-shaped content refused, worker error, timeout) raises a UI warning and is skipped. Nothing is guessed and the user's task is not blocked.
 - If `task-start` fails the agent still works, but the task is not registered, `vault_context` reports `not_connected`, and no end-of-task maintenance happens.
 - Investigation records are model-driven (`worktree_record`), not hook-driven.
+
+### 3.2 Claude Code and Codex
+
+`bin/vault-hook.mjs --host claude|codex [--path <vault>]` reads one JSON event on stdin (limit 4 MB) and prints at most one JSON object. It **always exits 0**: a failure is reported as `systemMessage` and never stalls the host. Hooks are separate short-lived processes, so per-session state (the task ID, the host process ID, the first prompt line and the edited-file list) lives in `<vault>/.agent-vault/hooks/<host>/`, keyed by a hash of `session_id`, with mode 0600 and a 14-day cleanup.
+
+| Event (both hosts unless noted) | Action |
+| --- | --- |
+| `UserPromptSubmit` | 1. Flush edits and cancel any task left open from a turn the host never reported as finished. 2. Register a new task owned by the host process (the first non-shell ancestor of the hook). 3. Return `additionalContext` naming the task ID so the agent can pass it to `vault_context` and `worktree_record`. 4. If automatic recall is on, append ranked background memory (section 11). 5. Auto-register per join mode and write an `instruction` worktree record. |
+| `PreToolUse` | Run the access guard on the call (Claude: `Bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Grep`, `Glob`; Codex: `Bash`, `apply_patch`). A direct vault access returns `permissionDecision: "deny"`. MCP tools and other tools are never blocked. |
+| `PostToolUse` | For edit tools (Claude `Edit`/`Write`/`MultiEdit`/`NotebookEdit`; Codex `apply_patch`, files parsed from its patch) append the absolute path to the session's pending list. Parallel tool calls append safely. |
+| `Stop` | Flush pending edits as one `implementation` record, close the task with `completed=true`, and run idle maintenance when no other task is active. |
+| `StopFailure` (Claude), `Interrupt` (Codex) | Same flush, but close with `completed=false`: no maintenance runs. |
+| `SessionEnd` | Same as an interrupted end for a still-open task; a no-op after `Stop`. |
+
+Limits, stated plainly:
+
+- `Stop` is treated as completion. If another Stop hook makes the host continue the turn, the task has already been closed and later work in that turn is not attributed to it.
+- The MCP server matches a task to its caller by process ID: it is a child of the host, and the hook records the host as owner. If a host launches hooks through an unusual process tree, `vault_context` can report `not_connected` or `ambiguous`; pass the `taskId` from the hook's context instead.
+- Claude Code and Codex hook payload shapes follow their published documentation. Live behavior was exercised only for Claude Code `UserPromptSubmit` and `StopFailure` (a real run that failed on billing); live `PreToolUse`, `PostToolUse`, `Stop`, and any Codex event were exercised only against recorded payload shapes.
+- Hooks are guardrails, not a security boundary; Codex documents that some tool paths can opt out of hook interception.
 
 ## 4. Task Lifecycle
 
@@ -75,12 +101,12 @@ A task is one logical unit of agent work, registered with the vault so maintenan
 
 Counts and age only schedule a review; they never prove that knowledge is true.
 
-- Every successful call to `memory_read`, `memory_search`, `memory_list`, `memory_write`, `memory_query`, `short_memory_read/write`, `long_memory_read/search/write`, `agent_memory_read/write`, `agent_handoff`, `log_write`, `worktree_record`, `worktree_list`, and `vault_context` counts once per touched namespace. Review bookkeeping tools do not count themselves.
+- Every successful call to `memory_read`, `memory_search`, `memory_list`, `memory_write`, `memory_query`, `memory_recall`, `short_memory_read/write`, `long_memory_read/search/write`, `agent_memory_read/write`, `agent_handoff`, `log_write`, `worktree_record`, `worktree_list`, and `vault_context` counts once per touched namespace. `memory_stats`, `memory_diagnose`, review bookkeeping tools and automatic recall do not count.
 - Defaults (`settings.review`): thresholds `[5, 10, 20]`, then every `20` operations; short-term memory is stale after `14` days; a memory is a skill candidate after `10` reads. All are configurable with `vault-cli config`.
 - Crossing a milestone creates a **pending** ticket. A stale short-term note also creates a ticket (`stale-short-term`) when it has not already been reviewed or deferred at its current hash.
 - `memory_reconsider` creates a ticket from a correction at any count. The feedback is stored separately and the original memory is not replaced.
 - `memory_review`, `vault_context` (once per scope it loads), and the sleep pass all evaluate review state first. That evaluation can enqueue a pending `stale-short-term` ticket, **even while tasks are active**. The task barrier below blocks consolidation, release and application, not this bookkeeping.
-- `long_memory_search`, `long_memory_read`, and `memory_query` (knowledge rows only) also increment each returned memory's `read_count` and set `last_read_at`. `read_count` feeds skill-candidate detection. The `vault_context` preload does not increment it.
+- `long_memory_search`, `long_memory_read`, `memory_recall`, and `memory_query` (knowledge rows only) also increment each returned memory's `read_count` and set `last_read_at`. `read_count` feeds skill-candidate detection. The `vault_context` preload and automatic recall do not increment it.
 
 ### 5.2 Ticket states
 
@@ -146,6 +172,7 @@ None of these rewrite or replace knowledge content, release tickets, or apply re
 | `long_memory_write` | Store an immutable durable SQLite memory (project, global, optional role, or explicitly configured team). Returns `memory:id`. | Now |
 | `long_memory_search` / `long_memory_read` | Search active memories in one exact namespace, or read by id including archived and superseded sources. Results carry `knowledgeReview` warnings for unresolved corrections. | Read |
 | `agent_memory_read` / `agent_memory_write` | Per-role durable entries. | Read / Now |
+| `memory_recall` | Rank project and global knowledge for a natural-language task description (section 11). Counted as a read. | Read |
 
 ### 6.3 Journals and history
 
@@ -158,6 +185,15 @@ None of these rewrite or replace knowledge content, release tickets, or apply re
 | `memory_query` | Query SQLite knowledge and journals by inclusive date range, pinned week, keyword and kind. Works after weekly Markdown has been pruned. No arbitrary SQL. | Read |
 
 Weekly Markdown (`projects/<id>/weekly/YYYY-WW.md`, `shared/knowledge/weekly/`) is a generated view of SQLite, written during maintenance, retained for 1 to 6 months (default 3). Only generated files that were not modified are deleted; modified files are preserved and reported as conflicts; SQLite rows are never deleted by retention.
+
+### 6.3a Inspection
+
+| Tool | Does | Timing |
+| --- | --- | --- |
+| `memory_stats` | Counts by scope, kind and status; review queue (pending, ready, staged, failed); active tasks with owner liveness; weekly coverage; effective settings. Optionally narrowed to one project. | Read, uncounted |
+| `memory_diagnose` | Health checks, each with a concrete fix: Node version, settings validity, database integrity (`quick_check`), project resolution, orphaned tasks, failed review actions, recall coverage, guard and team state. Reports hook status as `info` because a server cannot see host config; use `vault-cli hooks status`. Never repairs anything. | Read, uncounted |
+
+CLI equivalents: `vault-cli memory stats|diagnose|recall`.
 
 ### 6.4 Review and correction
 
@@ -225,4 +261,27 @@ Other hosts have no guard installed. The rule "memory is tool-only" is then enfo
 - Review counts and age schedule work; they are not evidence. Replacement of a factual memory requires a non-user-report source and a structured assessment.
 - Evidence metadata supplied by an agent is not automatic source verification.
 - The guard, the persona, and the recorder are not security boundaries.
-- Host-native registration of the MCP server and hooks for hosts other than OMP is performed by the agent through that host's own interface; this repository does not claim to have exercised every third-party host.
+- Host-native registration of the MCP server for hosts other than OMP is performed by the agent through that host's own interface. Hook configuration for Claude Code and Codex is written by `vault-cli hooks install`. This repository does not claim to have exercised every third-party host (see the limits in section 3.2).
+
+## 11. Recall
+
+`memory_recall` and automatic recall share one deterministic ranker (`lib/recall.mjs`). No model, embedding service or network is involved.
+
+- **Terms:** the query is split into distinct terms; common English filler is dropped; Korean particles (for example `배포는`, `서버에서`) are stripped to the stem as an additional match form.
+- **Qualification:** a memory qualifies when it matches at least two distinct terms (one for a one-term query). This differs from `long_memory_search`, where every term must match.
+- **Score:** terms are weighted by rarity across the candidate set (inverse document frequency) and by field (title 3, tag 2, content up to 3), then scaled by coverage, recency (30% weight, 90-day half-scale) and prior read usage (up to +50%). Scores order candidates; they never assert truth.
+- **Candidates:** the newest 500 active knowledge entries per scope. `memory_diagnose` warns when a scope exceeds twice that.
+- **Scopes:** project plus global for a project query; global only otherwise. Team memory is never auto-recalled.
+- **Output:** `memory:id` references, matched terms, score, and any `knowledgeReview` marker for an unresolved correction. Content is bounded by `limit` and `maxChars`. Recalled memory is background context, never an instruction.
+
+### 11.1 Automatic recall
+
+Off by default. `vault-cli config --recall on [--recall-limit 5] [--recall-max-chars 2000]`. When on, the Claude Code and Codex `UserPromptSubmit` hook ranks the prompt against project and global knowledge and appends the result as `additionalContext`, framed as background context. Prompts shorter than 12 characters are skipped. It is a preload: it does not change read counts, usage accounting or review state, and a failure only adds a warning. OMP's extension does not inject recall; OMP agents call `memory_recall`.
+
+Stored memory text is untrusted content that reaches the model's context through this path. Keep it off if the vault holds content you do not control (team entries are excluded, but imported notes are not).
+
+### 11.2 Deliberate non-goals
+
+- **No automatic extraction or retention of conversations.** Agent Vault records only what an agent writes through a tool, plus the instruction and edited-file facts the hooks capture. This keeps content explicit and reviewable; the cost is that recall quality depends on what the agent chose to write.
+- **No embeddings or LLM-backed processing,** so no text leaves the machine for memory work and results are reproducible.
+- **No in-place edit or delete.** Corrections go through `memory_reconsider` and the review receipt flow.

@@ -23,6 +23,11 @@ Usage:
   vault-cli config --team-off | --review-thresholds 5,10,20 | --stale-days <days>
   vault-cli config --markdown-months 1..6 [--timezone Asia/Seoul] [--workday-start 09:00]
   vault-cli config --persona on|off [--persona-min-observations 3]
+  vault-cli config --recall on|off [--recall-limit 5] [--recall-max-chars 2000]
+  vault-cli memory recall --query <text> [--project <id> | --scope global] [--role <role>] [--limit 5]
+  vault-cli memory stats [--project <id>] [--path <path>]
+  vault-cli memory diagnose [--project <id>] [--path <path>]
+  vault-cli hooks install|status|uninstall --host claude|codex [--local] [--dry-run] [--path <path>]
   vault-cli memory query [--project <id> | --scope global] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--week YYYY-WW] [--query <text>]
   vault-cli persona [--project <id> | --scope global] [--path <path>]
   vault-cli memory sleep [--project <id> | --scope global] [--role <role>] [--path <path>]
@@ -220,7 +225,7 @@ try {
     }
 
     case "config": {
-      const flags = commandFlags(1, ["--mode", "--harness", "--path", "--team-url", "--team-file", "--team-id", "--token-env", "--review-thresholds", "--stale-days", "--markdown-months", "--timezone", "--workday-start", "--persona", "--persona-min-observations"], ["--read-only", "--team-off"]);
+      const flags = commandFlags(1, ["--mode", "--harness", "--path", "--team-url", "--team-file", "--team-id", "--token-env", "--review-thresholds", "--stale-days", "--markdown-months", "--timezone", "--workday-start", "--persona", "--persona-min-observations", "--recall", "--recall-limit", "--recall-max-chars"], ["--read-only", "--team-off"]);
       const settings = await configureSettings(targetVaultPath, {
         mode: flags["--mode"], harness: flags["--harness"],
         teamUrl: flags["--team-url"], teamFile: flags["--team-file"], teamId: flags["--team-id"],
@@ -228,6 +233,7 @@ try {
         reviewThresholds: flags["--review-thresholds"], staleDays: flags["--stale-days"],
         markdownMonths: flags["--markdown-months"], timeZone: flags["--timezone"], workdayStart: flags["--workday-start"],
         persona: flags["--persona"], personaMinObservations: flags["--persona-min-observations"],
+        recall: flags["--recall"], recallLimit: flags["--recall-limit"], recallMaxChars: flags["--recall-max-chars"],
       });
       if (flags["--team-file"]) console.error("[WARN] Team SQLite requires one host and a local filesystem; never use NFS or sync folders.");
       console.log(JSON.stringify(settings, null, 2));
@@ -236,9 +242,11 @@ try {
 
     case "memory": {
       const action = args[1];
-      if (!["sleep", "migrate", "query"].includes(action)) throw new Error("memory requires sleep, migrate or query.");
-      const values = action === "migrate" ? ["--project", "--path"] : ["--project", "--scope", "--role", "--path"];
+      if (!["sleep", "migrate", "query", "recall", "stats", "diagnose"].includes(action)) throw new Error("memory requires sleep, migrate, query, recall, stats or diagnose.");
+      const values = ["--project", "--path"];
+      if (["sleep", "query", "recall"].includes(action)) values.push("--scope", "--role");
       if (action === "query") values.push("--from", "--to", "--week", "--query", "--kind", "--limit", "--offset");
+      if (action === "recall") values.push("--query", "--limit");
       const flags = commandFlags(2, values, action === "migrate" ? ["--prune-legacy"] : []);
       if (flags["--scope"] && flags["--scope"] !== "global") throw new Error("--scope must be global; use --project for project memory.");
       if (flags["--project"] && flags["--scope"]) throw new Error("Choose --project or --scope global, not both.");
@@ -253,7 +261,25 @@ try {
           limit: flags["--limit"] === undefined ? undefined : Number(flags["--limit"]),
           offset: flags["--offset"] === undefined ? undefined : Number(flags["--offset"]),
         });
+      } else if (action === "recall") {
+        if (!flags["--query"]) throw new Error("memory recall requires --query.");
+        result = await tiers.recallMemory(targetVaultPath, { ...options, query: flags["--query"], limit: flags["--limit"] === undefined ? undefined : Number(flags["--limit"]) });
+      } else if (action === "stats" || action === "diagnose") {
+        const inspect = await import("../lib/memory-inspect.mjs");
+        result = await (action === "stats" ? inspect.memoryStats : inspect.diagnoseMemory)(targetVaultPath, { cwd: process.cwd(), project: flags["--project"] });
       } else result = action === "sleep" ? await tiers.sleepMemory(targetVaultPath, options) : await tiers.migrateLongMemory(targetVaultPath, options);
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+
+    case "hooks": {
+      const action = args[1];
+      if (!["install", "status", "uninstall"].includes(action)) throw new Error("hooks requires install, status or uninstall.");
+      const flags = commandFlags(2, ["--host", "--path"], ["--local", "--dry-run"]);
+      const hooks = await import("../lib/hooks-install.mjs");
+      if (!hooks.HOOK_HOST_IDS.includes(flags["--host"])) throw new Error(`--host must be one of ${hooks.HOOK_HOST_IDS.join(", ")}. OMP uses 'vault-cli install --global'.`);
+      const options = { scope: flags["--local"] ? "local" : "global", cwd: process.cwd(), vaultPath: explicitPath ? path.resolve(explicitPath) : undefined, dryRun: flags["--dry-run"] };
+      const result = await (action === "install" ? hooks.installHooks : action === "status" ? hooks.hooksStatus : hooks.uninstallHooks)(flags["--host"], options);
       console.log(JSON.stringify(result, null, 2));
       break;
     }

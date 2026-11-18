@@ -99,7 +99,7 @@ test("tools/list exposes memory, project and agent operations with schemas", asy
   const server = await startServer(t, vault, repo);
   const reply = await server.request("tools/list", {});
   const names = reply.result.tools.map((tool) => tool.name).sort();
-  for (const required of ["vault_context", "memory_search", "memory_read", "memory_list", "memory_write", "memory_query", "persona_observe", "persona_read", "persona_resolve", "memory_task_start", "project_resolve", "project_list", "project_scaffold", "agent_memory_read", "agent_memory_write", "agent_handoff", "log_write"]) {
+  for (const required of ["vault_context", "memory_search", "memory_read", "memory_list", "memory_write", "memory_query", "memory_recall", "memory_stats", "memory_diagnose", "persona_observe", "persona_read", "persona_resolve", "memory_task_start", "project_resolve", "project_list", "project_scaffold", "agent_memory_read", "agent_memory_write", "agent_handoff", "log_write"]) {
     assert.ok(names.includes(required), `missing tool ${required}`);
   }
   for (const tool of reply.result.tools) {

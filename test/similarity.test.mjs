@@ -99,3 +99,65 @@ test("topK is stable and leaves inputs unchanged", () => {
   assert.deepEqual(topK(items, 0, (item) => item.score), []);
   assert.deepEqual(items, original);
 });
+
+// The original algorithm, kept here only as the specification the optimized one must match exactly.
+function referenceRank(rows, query, { textOf = (item) => `${item.title}\n${item.content}`, limit = 5, minScore = 0.05 } = {}) {
+  const grams = [...charGrams(query)];
+  if (grams.length === 0 || rows.length === 0 || limit <= 0) return [];
+  const frequency = new Array(grams.length).fill(0);
+  const candidates = rows.map((item) => {
+    const set = charGrams(textOf(item));
+    const hits = [];
+    for (let i = 0; i < grams.length; i++) if (set.has(grams[i])) { hits.push(i); frequency[i]++; }
+    return { item, hits, size: set.size };
+  });
+  const idf = frequency.map((df) => Math.log(1 + (rows.length + 1) / (df + 1)));
+  const total = idf.reduce((sum, weight) => sum + weight, 0);
+  const ranked = [];
+  for (const { item, hits, size } of candidates) {
+    let weight = 0;
+    for (const hit of hits) weight += idf[hit];
+    const score = weight / total;
+    if (score >= minScore) ranked.push({ row: item, score, dice: 2 * hits.length / (grams.length + size) });
+  }
+  ranked.sort((a, b) => b.score - a.score || b.dice - a.dice);
+  return ranked.slice(0, limit).map(({ row: item, score }) => ({ row: item, score }));
+}
+
+test("rankByCharSimilarity returns exactly what scoring full gram sets returns, including ties, one-character queries and astral text", () => {
+  let seed = 20260518;
+  const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+  // Few distinct characters make equal scores (and so the Dice tie-break) common; "\ud83d" and "\ude00" are lone surrogates.
+  const alphabet = ["a", "b", "c", " ", "\n", "배", "포", "절", "차", "漢", "💡", "😀", "Ａ", "ß", "é", "\ud83d", "\ude00"];
+  const text = (max) => Array.from({ length: Math.floor(random() * max) }, () => alphabet[Math.floor(random() * alphabet.length)]).join("");
+  let compared = 0;
+  for (let round = 0; round < 400; round++) {
+    const rows = Array.from({ length: 1 + Math.floor(random() * 40) }, () => row(text(6), text(random() < 0.2 ? 400 : 30)));
+    const queries = [text(1), text(2), text(3), text(8), rows[0].title, `${rows[0].title} ${rows[rows.length - 1].content.slice(0, 5)}`];
+    for (const query of queries) {
+      for (const options of [{}, { limit: 1 }, { limit: 3, minScore: 0 }, { limit: 100, minScore: 0.3 }]) {
+        assert.deepEqual(rankByCharSimilarity(rows, query, options), referenceRank(rows, query, options), JSON.stringify({ round, query, options }));
+        compared++;
+      }
+    }
+  }
+  assert.ok(compared >= 9000);
+  const single = [row("a"), row("ab"), row("xa"), row("A"), row("💡"), row("💡x")];
+  for (const query of ["a", "💡", "ａ", "\ude00"]) assert.deepEqual(rankByCharSimilarity(single, query, { minScore: 0 }), referenceRank(single, query, { minScore: 0 }), query);
+  assert.deepEqual(rankByCharSimilarity(single, "a", { minScore: 0 }).filter((hit) => hit.score > 0).map((hit) => hit.row.title), ["a", "A"], "a one-character query matches only a text that is exactly that character");
+});
+
+test("remembered gram counts never change a result when the memo evicts or a memory's text changes", () => {
+  // Every row contains the query, so all of them tie and each needs a gram count. 70 rows of ~90 000 characters exceed the memo's
+  // 4 000 000-character budget several times over, forcing eviction; texts differ only in distinct-gram counts.
+  const filler = (n, salt) => Array.from({ length: n }, (_, i) => String.fromCodePoint(0x4e00 + ((i * 7 + salt * 13) % (150 + (salt % 40))))).join("");
+  const rows = Array.from({ length: 70 }, (_, i) => row(`doc ${i}`, `needle ${filler(90_000, i)}`));
+  for (let pass = 0; pass < 3; pass++) {
+    assert.deepEqual(rankByCharSimilarity(rows, "needle", { limit: 10 }), referenceRank(rows, "needle", { limit: 10 }), `pass ${pass}`);
+  }
+  const before = rankByCharSimilarity(rows, "needle", { limit: 3 }).map((hit) => hit.row.title);
+  rows[0] = row("doc 0", "needle x"); // the shortest text has the fewest distinct grams, so it must now rank first
+  assert.equal(rankByCharSimilarity(rows, "needle", { limit: 3 })[0].row.title, "doc 0");
+  assert.notEqual(before[0], "doc 0");
+  assert.deepEqual(rankByCharSimilarity(rows, "needle", { limit: 3 }), referenceRank(rows, "needle", { limit: 3 }));
+});

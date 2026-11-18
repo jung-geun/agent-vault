@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -316,4 +316,38 @@ test("the MCP server advertises the modes, validates them, and survives a catast
   const after = await server.call("long_search", { project: "alpha", query: "deploy" });
   assert.equal(after.isError, false, "the server stays responsive after a runaway pattern");
   assert.equal(after.body.results[0].title, "Release process");
+});
+
+test("doc_search scans every note across the 500-note chunk boundary, clips large bodies, and scores only the newest 500 by similarity", async (t) => {
+  const { vault } = await fixture(t);
+  const dir = path.join(vault, "shared", "knowledge", "bulk");
+  await mkdir(dir, { recursive: true });
+  const baseline = (await store.searchMemory(vault, { scope: "shared", mode: "regex", query: "." })).scanned; // notes created by initVault
+  const total = 1203;
+  const pad = (n) => String(n).padStart(4, "0");
+  const file = (n) => path.join(dir, `note-${pad(n)}.md`);
+  await Promise.all(Array.from({ length: total }, (_, i) => writeFile(file(i), `# Note ${pad(i)}\n\n${[7, 507, 1107].includes(i) ? `marker-${pad(i)}` : "plain filler text"}\n`)));
+  // Strictly increasing modification times: note-1202 is the newest, so the newest 500 are 0703..1202.
+  const base = Date.parse("2020-01-01T00:00:00Z") / 1000;
+  await Promise.all(Array.from({ length: total }, (_, i) => utimes(file(i), base + i, base + i)));
+
+  const regex = await store.searchMemory(vault, { scope: "shared", mode: "regex", query: "marker-\\d+", limit: 10 });
+  assert.deepEqual(regex.results.map((item) => path.basename(item.path)), ["note-0007.md", "note-0507.md", "note-1107.md"], "one hit in each of the three 500-note chunks");
+  assert.deepEqual([regex.scanned, regex.totalMatches, regex.search.candidates, regex.search.truncated], [total + baseline, 3, total + baseline, false]);
+  assert.equal((await store.searchMemory(vault, { scope: "shared", mode: "regex", query: "marker-\\d+", limit: 2 })).totalMatches, 3, "limit trims the results, not the scan");
+
+  // 900 KB notes are scanned, but only their first 20 000 characters; a note over 1 MB is skipped like every other search.
+  await writeFile(path.join(dir, "big-late.md"), `# Big\n\n${"x".repeat(100_000)} late-needle ${"y".repeat(800_000)}\n`);
+  await writeFile(path.join(dir, "big-early.md"), `# Big\n\nearly-needle ${"y".repeat(800_000)}\n`);
+  await writeFile(path.join(dir, "too-big.md"), `# Huge\n\nearly-needle ${"z".repeat(1_100_000)}\n`);
+  const clipped = await store.searchMemory(vault, { scope: "shared", mode: "regex", query: "late-needle|early-needle", limit: 10 });
+  assert.deepEqual(clipped.results.map((item) => path.basename(item.path)), ["big-early.md"]);
+  assert.equal(clipped.scanned, total + baseline + 2, "the over-limit note is not read");
+  assert.equal(clipped.search.truncated, true, "clipping is reported");
+
+  const newest = await store.searchMemory(vault, { scope: "shared", mode: "similar", query: "marker-1107" });
+  assert.equal(newest.results[0].path.endsWith("note-1107.md"), true);
+  assert.deepEqual([newest.search.candidates, newest.search.truncated], [500, true]);
+  const older = await store.searchMemory(vault, { scope: "shared", mode: "similar", query: "marker-0507", limit: 10 });
+  assert.ok(!older.results.some((item) => item.path.endsWith("note-0507.md")), "notes outside the newest 500 are not candidates");
 });

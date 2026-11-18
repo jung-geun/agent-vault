@@ -130,7 +130,7 @@ test("concurrent access events append complete lines without query text", async 
   });
 
   await Promise.all(Array.from({ length: 24 }, (_, index) => appendAccessEvent(vault, {
-    tool: "memory_search",
+    tool: "doc_search",
     args: { role: "builder", query: `private-query-${index}` },
     result: { totalMatches: index, results: [] },
     now: new Date(NOW.getTime() + index),
@@ -139,7 +139,7 @@ test("concurrent access events append complete lines without query text", async 
   const log = await readFile(path.join(vault, ".agent-vault", "access.jsonl"), "utf8");
   const events = log.trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(events.length, 24);
-  assert.ok(events.every((event) => event.tool === "memory_search" && event.role === "builder"));
+  assert.ok(events.every((event) => event.tool === "doc_search" && event.role === "builder"));
   assert.equal(/private-query-\\d+/.test(log), false);
 });
 

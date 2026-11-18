@@ -157,7 +157,7 @@ test("legacy pruning waits for idle and preserves changed, oversized and undated
   assert.ok((await longMemorySearch(vault, { project: "alpha" })).results.every((row) => row.kind === "knowledge"));
 });
 
-test("memory query combines date and keyword filters with bounded, isolated pages", async (t) => {
+test("memory history combines date and keyword filters with bounded, isolated pages", async (t) => {
   const { vault } = await fixture(t);
   const content = "pagination-sentinel " + "large retained evidence ".repeat(700);
   for (let index = 0; index < 3; index++) {

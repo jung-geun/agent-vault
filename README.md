@@ -26,10 +26,12 @@ After installing, use your agent's skill invocation feature, or ask in chat: **"
 - **Separated memory:** Splits global, project, and role scopes, and distinguishes short-term working state from long-term knowledge.
 - **Evidence-based improvement:** Treats user corrections as a signal to reevaluate, comparing existing knowledge with new evidence. Updates are deferred when evidence is insufficient.
 - **Cleanup at task boundaries:** Usage counts and age only schedule a review. Reviewed changes are applied at a normal task end or idle point, never by interrupting a running task.
-- **Local storage:** Documents and short-term memory live in Markdown; long-term memory and review history live in SQLite. You can browse the Markdown documents in Obsidian.
-- **Weekly journals:** Knowledge, logs, and handoffs are grouped by date and weekday into a single `YYYY-WW.md`. A task still running after Monday stays in the work week it started in, and SQLite can be queried by date or keyword.
+- **Pluggable storage:** Documents and short-term memory stay in Markdown. Durable memory and review history use dependency-free SQLite by default, or an explicitly configured PostgreSQL or MySQL/MariaDB database.
+- **Weekly journals:** Knowledge, logs, and handoffs are grouped by date and weekday into a single `YYYY-WW.md`. A task still running after Monday stays in the work week it started in. The configured database remains queryable by date or keyword.
 - **User persona:** Tracks question, coding, work-instruction, and work-hour patterns together with their evidence to tune answers and clarifying questions. The current request always takes priority, and observations are never treated as facts or permissions.
 - **Optional team sharing:** Uses only an explicitly configured team store and never shares personal memory automatically.
+- **Ranked recall and health checks:** `agent-vault recall` ranks memory for a task description by keyword without an external search service. Optional automatic recall adds it to Claude Code and Codex prompts as background context, never as instructions. `agent-vault status` reports counts, the review queue, and a concrete fix for each problem.
+- **Regex, similarity, and local-embedding search:** Searches accept `regex` and `similar` modes and return the top 5 (up to 10) results. `similar` uses a small embedding model running on your own machine (Ollama or LM Studio, loopback only) when one is available, and character similarity otherwise, so it also works with no model. Nothing is embedded unless you search with `similar`. For Korean or other non-English notes, use a multilingual model (for example `granite-embedding:278m`) instead of an English-only one.
 
 ## Usage
 
@@ -52,14 +54,44 @@ The entries below are **requests you send to the agent**. They are not terminal 
 
 Environments that need a permission approval or an agent restart for the first connection will tell you once. Where MCP or hooks cannot be registered automatically, the agent explains the required steps and limits, and never reports an unconnected state as complete.
 
+### Optional SQL storage
+
+SQLite needs no npm packages or configuration. For SQL, provision an empty database dedicated to one vault. Use PostgreSQL 14+ with UTF-8, MySQL 8.0.17+, or MariaDB 10.6+. The database user needs table, index, trigger, and routine creation privileges as well as read/write access. Install only the driver you select, next to the installed `bin/` and `lib/`:
+
+```sh
+npm install --prefix /absolute/path/to/agent-vault --no-save --no-package-lock pg@8
+# MySQL or MariaDB instead:
+npm install --prefix /absolute/path/to/agent-vault --no-save --no-package-lock mysql2@3
+```
+
+Set `AGENT_VAULT_DB_DRIVER` to `postgres`, `mysql`, or `mariadb`; supply a connection URL through `AGENT_VAULT_DB_URL` or `AGENT_VAULT_DB_URL_FILE`. Alternatively, persist a driver and an environment variable name or credential-file path:
+
+```sh
+vault-cli config --db-driver postgres --db-url-file /absolute/private/path/vault-dsn
+```
+
+The file must be owner-only and contain one connection URL. Never pass the URL itself on the command line or put it in the vault settings. Set the same configuration for the CLI, MCP process, and all lifecycle hooks. Use verified TLS on non-local networks (`sslmode=verify-full` for PostgreSQL, `ssl=true` for MySQL/MariaDB). See [storage configuration](spec.md#1b-storage-configuration-and-cutover) for details.
+
+To move an existing SQLite database, stop the vault's writers and run on the SQLite host:
+
+```sh
+vault-cli memory migrate-db --path /absolute/path/to/vault --dry-run
+vault-cli memory migrate-db --path /absolute/path/to/vault
+vault-cli memory diagnose --path /absolute/path/to/vault
+```
+
+The first command previews table counts without connecting to the destination. The copy requires an empty SQL store and leaves the SQLite source and Markdown untouched. Keep the original as a backup, then restart the clients with the SQL configuration.
+
+Team SQL is opt-in and uses a separate database. Configure it with `vault-cli config --team-db-driver postgres|mysql|mariadb --team-id <id>`; copy an existing team file with `memory migrate-db --team --from-sqlite <path>`.
+
 ### Memory is updated at task boundaries
 
-Work weeks run Monday to Sunday, and a running task keeps its original week even when the week changes. Markdown is retained only for the configured **1–6 months**, while SQLite records stay queryable.
+Work weeks run Monday to Sunday, and a running task keeps its original week even when the week changes. Markdown is retained only for the configured **1–6 months**, while database records stay queryable.
 
-Persona and reviewed memory changes are applied at an idle point after a normal task end. In environments without hooks, you can ask for `agent-vault sleep` after finishing your work. Existing daily files are imported with `agent-vault migrate`, and deleting the originals requires a separate, explicit request.
+Persona and reviewed memory changes are applied at an idle point after a normal task end. In environments without hooks, you can ask for `agent-vault maintain` after finishing your work. Existing daily files are imported with `agent-vault migrate`, and deleting the originals requires a separate, explicit request.
 
 ### When hooks run and what each tool does
 
-In OMP, the installed hooks start a task when you send a prompt, record your instruction and each file-editing turn, and close the task when the agent finishes. Maintenance and persona updates run only after a successfully completed task when no other task is active. Other environments install no hooks and use `agent-vault sleep` instead. For the exact events, timing, every MCP tool, and failure behavior, see **[spec.md](spec.md)**.
+OMP, Claude Code and Codex run hooks that start a task when you send a prompt, record your instruction and each file-editing turn, and close the task when the agent finishes. Ask the agent for `agent-vault install` to set them up: for Claude Code and Codex it runs `vault-cli hooks install --host claude|codex`, and Codex then asks you to review and trust the hooks once with `/hooks`. Maintenance and persona updates run only after a successfully completed task when no other task is active. Other environments such as Cursor install no hooks and use `agent-vault maintain` instead. For the exact events, timing, every MCP tool, what has been verified live, and failure behavior, see **[spec.md](spec.md)**.
 
 See [SKILL.md](SKILL.md) for the detailed tool contract. The official [Skills customization](https://www.skills.sh/docs/customize) applies to the repository's listing page; it does not register commands or hooks for a running agent.

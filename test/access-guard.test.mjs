@@ -87,13 +87,13 @@ test("guard inspects nested parallel, eval and tool device payloads", async (t) 
 test("guard allows provided MCP tools including device routes and never disables them on bad settings", async (t) => {
   const { vault, check } = await fixture(t);
   const payload = { path: `${vault}/user/profile.md`, content: "fixture" };
-  assert.equal(check("mcp__agent_vault_memory_read", payload), undefined);
-  assert.equal(check("functions.mcp__agent_vault_memory_write", payload), undefined);
-  assert.equal(check("write", { path: "xd://mcp__agent_vault_memory_read", content: JSON.stringify(payload) }), undefined);
+  assert.equal(check("mcp__agent_vault_doc_read", payload), undefined);
+  assert.equal(check("functions.mcp__agent_vault_doc_write", payload), undefined);
+  assert.equal(check("write", { path: "xd://mcp__agent_vault_doc_read", content: JSON.stringify(payload) }), undefined);
   await mkdir(path.join(vault, ".agent-vault"), { recursive: true });
   await writeFile(path.join(vault, ".agent-vault/settings.json"), "invalid json");
-  assert.equal(check("mcp__agent_vault_vault_context", {}), undefined);
-  assert.equal(check("write", { path: "xd://mcp__agent_vault_vault_context", content: "{}" }), undefined);
+  assert.equal(check("mcp__agent_vault_context", {}), undefined);
+  assert.equal(check("write", { path: "xd://mcp__agent_vault_context", content: "{}" }), undefined);
   assert.equal(check("read", { path: `${vault}/user/profile.md` }).block, true);
   assert.equal(check("bash", { command: "git status" }), undefined);
   assert.equal(check("read", { path: "package.json" }), undefined);

@@ -366,3 +366,17 @@ test("preserved custom OMP targets never suggest Copy as a fix", async (t) => {
     assert.doesNotMatch(JSON.stringify(preview), /[Cc]hoose Copy/);
   }
 });
+
+test("the rule file shipped before the tool rename is upgraded in place, and a user-edited rule is preserved", async (t) => {
+  const options = await fixture(t);
+  const shipped = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "integrations", "omp", "agent-vault.rule.md");
+  const previous = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "agent-vault.rule.pre-tool-rename.md");
+  const target = path.join(options.home, "agent-vault.md");
+  await writeFile(target, await readFile(previous));
+  assert.equal(await installRule(shipped, target, { dryRun: true }), "updated from legacy version");
+  assert.equal(await installRule(shipped, target), "updated from legacy version");
+  assert.deepEqual(await readFile(target), await readFile(shipped));
+  assert.equal(await installRule(shipped, target), "already current");
+  await writeFile(target, `${await readFile(previous, "utf8")}\nMy own addition.\n`);
+  assert.equal(await installRule(shipped, target), "preserved existing file with different content");
+});

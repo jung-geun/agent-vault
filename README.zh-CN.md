@@ -26,10 +26,12 @@ npx skills add jung-geun/agent-vault -g
 - **记忆分离：** 区分全局、项目和角色范围，并区分短期工作状态与长期知识。
 - **基于证据的改进：** 将用户的更正视为重新评估的信号，并将现有知识与新证据进行比较。证据不足时会暂缓更新。
 - **在任务边界整理：** 使用次数和时间老化只会安排一次审查。已审查的变更会在任务正常结束或空闲时应用，不会打断正在进行的任务。
-- **本地存储：** 文档和短期记忆保存为 Markdown，长期记忆和审查记录保存在 SQLite 中。也可以用 Obsidian 查看 Markdown 文档。
-- **每周记录：** 将知识、日志和交接按日期和星期汇总到单个 `YYYY-WW.md` 中。进行中的任务即使过了周一，也仍留在其开始的工作周内，在 SQLite 中可按日期或关键词查询。
+- **可选存储后端：** 文档和短期记忆仍以 Markdown 文件保存。长期记忆和审查记录默认使用无需额外软件包的 SQLite，也可显式配置 PostgreSQL 或 MySQL/MariaDB。
+- **每周记录：** 将知识、日志和交接按日期和星期汇总到单个 `YYYY-WW.md` 中。进行中的任务即使过了周一，也仍留在其开始的工作周内。所配置的数据库支持按日期或关键词查询。
 - **用户 persona：** 连同依据一起管理提问、编码、工作指示和工作时间的模式，用来调整回答和提问方式。当前请求始终优先，观察结果不会被当作事实或权限。
 - **可选的团队共享：** 只使用明确配置的团队存储，不会自动共享个人记忆。
+- **排序式回忆与健康检查：** `agent-vault recall` 按关键词对与任务描述相符的记忆排序，无需外部搜索服务。可选的自动回忆只会把结果作为背景信息附加到 Claude Code 和 Codex 的提示中，不会被当作指令。`agent-vault status` 会报告数量、审查队列以及每个问题的具体处理方法。
+- **正则、相似度与本地嵌入检索：** 检索支持 `regex` 和 `similar` 模式，返回前 5 条（最多 10 条）结果。`similar` 在本机有小型嵌入模型（Ollama 或 LM Studio，仅限回环地址）时使用它，否则使用字符相似度，因此没有模型也能使用。只有用 `similar` 检索时才会做嵌入。对中文、韩文等非英文笔记，请使用多语言模型（例如 `granite-embedding:278m`），而不是仅支持英文的模型。
 
 ## 使用方法
 
@@ -52,14 +54,44 @@ npx skills add jung-geun/agent-vault -g
 
 如果首次连接需要权限确认或重启智能体，会提示一次。对于无法自动注册 MCP 或 hooks 的环境，会说明所需步骤和限制，不会把尚未连接的状态当作已完成。
 
+### 可选的 SQL 存储
+
+SQLite 不需要额外的 npm 包或配置。使用 SQL 时，请为每个存储库准备一个专用的空数据库。支持 PostgreSQL 14 及以上版本（UTF-8）、MySQL 8.0.17 及以上版本以及 MariaDB 10.6 及以上版本。数据库用户需要读写权限，以及创建表、索引、触发器和例程的权限。只需在已安装的 `bin/` 和 `lib/` 所在目录安装选用的驱动：
+
+```sh
+npm install --prefix /absolute/path/to/agent-vault --no-save --no-package-lock pg@8
+# 使用 MySQL 或 MariaDB 时：
+npm install --prefix /absolute/path/to/agent-vault --no-save --no-package-lock mysql2@3
+```
+
+将 `AGENT_VAULT_DB_DRIVER` 设为 `postgres`、`mysql` 或 `mariadb`，通过 `AGENT_VAULT_DB_URL` 或 `AGENT_VAULT_DB_URL_FILE` 提供连接 URL。也可以只在设置中保存驱动名称和环境变量名称或凭据文件路径：
+
+```sh
+vault-cli config --db-driver postgres --db-url-file /absolute/private/path/vault-dsn
+```
+
+凭据文件必须仅允许所有者访问，并且只包含一个连接 URL。不要将 URL 本身写入命令行参数或存储库设置。CLI、MCP 进程和所有任务 hooks 必须使用相同的配置。通过非本地网络连接时请启用验证服务器身份的 TLS：PostgreSQL 使用 `sslmode=verify-full`，MySQL/MariaDB 使用 `ssl=true`。详情见[存储规范](spec.md#1b-storage-configuration-and-cutover)。
+
+迁移现有 SQLite 数据库时，先停止写入进程，然后在 SQLite 文件所在的主机上执行：
+
+```sh
+vault-cli memory migrate-db --path /absolute/path/to/vault --dry-run
+vault-cli memory migrate-db --path /absolute/path/to/vault
+vault-cli memory diagnose --path /absolute/path/to/vault
+```
+
+第一条命令不会连接目标数据库，只显示各表的记录数。复制需要空的 SQL 数据库，不会修改原始 SQLite 或 Markdown 文件。保留原文件作为备份，再使用 SQL 配置重启客户端。
+
+团队 SQL 需要单独启用并使用专用数据库。使用 `vault-cli config --team-db-driver postgres|mysql|mariadb --team-id <id>` 配置；使用 `memory migrate-db --team --from-sqlite <path>` 复制现有的团队文件。
+
 ### 记忆在任务边界更新
 
-工作周按周一到周日计算，进行中的任务即使跨周也保持其原来的工作周。Markdown 只保留设定的 **1～6 个月**，SQLite 记录仍可持续查询。
+工作周按周一到周日计算，进行中的任务即使跨周也保持其原来的工作周。Markdown 只保留设定的 **1～6 个月**，数据库记录仍可持续查询。
 
-persona 和已审查的记忆变更会在任务正常结束后的空闲时刻生效。在没有 hooks 的环境中，可以在工作结束后请求 `agent-vault sleep`。已有的按日文件通过 `agent-vault migrate` 导入，删除原文件需要另行明确请求。
+persona 和已审查的记忆变更会在任务正常结束后的空闲时刻生效。在没有 hooks 的环境中，可以在工作结束后请求 `agent-vault maintain`。已有的按日文件通过 `agent-vault migrate` 导入，删除原文件需要另行明确请求。
 
 ### hooks 何时运行以及各工具的作用
 
-在 OMP 中，已安装的 hooks 会在你发送提示时启动任务，记录你的指示和每个修改文件的回合，并在智能体结束时关闭任务。维护和 persona 更新只会在任务正常完成且没有其他任务进行时运行。其他环境不会安装 hooks，需要改为请求 `agent-vault sleep`。确切的事件与时机、全部 MCP 工具以及失败时的行为，请参阅 **[spec.md](spec.md)**。
+在 OMP、Claude Code 和 Codex 中，hooks 会在你发送提示时启动任务，记录你的指示和每个修改文件的回合，并在智能体结束时关闭任务。请智能体执行 `agent-vault install` 即可完成设置：对 Claude Code 和 Codex 会运行 `vault-cli hooks install --host claude|codex`，之后 Codex 会要求你在 `/hooks` 中审查并信任这些 hooks 一次。维护和 persona 更新只会在任务正常完成且没有其他任务进行时运行。Cursor 等其他环境不会安装 hooks，需要改为请求 `agent-vault maintain`。确切的事件与时机、全部 MCP 工具、实际验证过的范围以及失败时的行为，请参阅 **[spec.md](spec.md)**。
 
 详细的工具约定请参阅 [SKILL.md](SKILL.md)。官方的 [Skills 自定义](https://www.skills.sh/docs/customize)作用于仓库的介绍页面，不会为正在运行的智能体注册命令或 hooks。

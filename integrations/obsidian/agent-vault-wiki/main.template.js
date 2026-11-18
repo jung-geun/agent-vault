@@ -135,7 +135,7 @@ class AgentVaultWikiView extends ItemView {
 
   renderActivity() {
     this.activityEl.empty();
-    const observed = this.accessEvents.filter((event) => ["memory_read", "memory_search", "memory_list", "agent_memory_read", "short_memory_read"].includes(event.tool));
+    const observed = this.accessEvents.filter((event) => ["doc_read", "doc_search", "doc_list", "role_read", "short_read"].includes(event.tool));
     this.activityEl.createEl("p", {
       text: `${observed.length} agent lookup events observed${observed.length ? " since logging began" : "; access history unavailable"}.`,
       cls: "avw-muted",

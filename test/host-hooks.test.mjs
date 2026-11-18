@@ -260,3 +260,46 @@ test("the MCP server recognises the task a Claude hook opened, through the share
   assert.equal(generic.memoryMaintenance.lifecycle.status, "not_connected");
   await runHook("claude", vault, base(repo, { hook_event_name: "Stop", last_assistant_message: "ok" }));
 });
+
+async function filesUnder(directory) {
+  const { readdir } = await import("node:fs/promises");
+  const found = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...await filesUnder(target));
+    else if (entry.isFile()) found.push(target);
+  }
+  return found;
+}
+
+const vaultContains = async (vault, needle) => {
+  for (const file of await filesUnder(vault)) if ((await readFile(file)).includes(needle)) return file;
+  return null;
+};
+
+test("a credential-shaped prompt is rejected from the journal and never reaches hook state or any vault file", async (t) => {
+  const { vault, repo } = await fixture(t);
+  const secret = `sk-${"a1B2c3D4e5F6g7H8i9J0k1L2"}`;
+  const prompt = `Use ${secret} to call the billing API and refactor the invoice module`;
+  const submitted = await runHook("claude", vault, base(repo, { hook_event_name: "UserPromptSubmit", prompt }));
+  assert.equal(submitted.code, 0);
+  assert.match(submitted.out.systemMessage, /record skipped/);
+  assert.ok(!JSON.stringify(submitted.out).includes(secret), "hook output must not echo the credential");
+  // The turn is still open (as after a crash): nothing from the prompt may be on disk yet.
+  assert.equal((await memoryStats(vault)).tasks.active, 1);
+  const state = (await filesUnder(path.join(vault, ".agent-vault", "hooks"))).filter((file) => file.endsWith(".json"));
+  assert.equal(state.length, 1);
+  const saved = await readFile(state[0], "utf8");
+  assert.ok(!saved.includes(secret) && !saved.includes("invoice") && !saved.includes("lastPrompt"), saved);
+  closeMemoryDbs();
+  assert.equal(await vaultContains(vault, secret), null, "credential found in the vault before Stop");
+  await runHook("claude", vault, base(repo, { hook_event_name: "PostToolUse", tool_name: "Edit", tool_input: { file_path: path.join(repo, "invoice.js") } }));
+  await runHook("claude", vault, base(repo, { hook_event_name: "Stop", last_assistant_message: "done" }));
+  const { queryWeeklyMemory } = await import("../lib/weekly-memory.mjs");
+  const records = (await queryWeeklyMemory(vault, { project: "alpha", kind: "worktree", limit: 20 })).records;
+  assert.ok(!records.some((record) => record.kind === "worktree" && /billing API/.test(record.content)), "rejected prompt must not be journaled");
+  const implementation = records.find((record) => record.title === "Edited 1 file(s)");
+  assert.match(implementation.content, /Triggered by: \(no prompt recorded\)/);
+  closeMemoryDbs();
+  assert.equal(await vaultContains(vault, secret), null, "credential found in the vault after Stop");
+});

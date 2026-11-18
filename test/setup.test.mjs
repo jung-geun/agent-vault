@@ -79,11 +79,11 @@ test("installed setup descriptors launch local memory tools without npm or a sou
   const call = (id, name, arguments_) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: arguments_ } });
   const requests = [
     { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "local-onboarding-test", version: "1" } } },
-    call(2, "memory_task_start", { taskId: "local-runtime-task" }),
-    call(3, "vault_context", { project: "local-runtime", role: "builder", taskId: "local-runtime-task" }),
-    call(4, "long_memory_write", { project: "local-runtime", role: "builder", taskId: "local-runtime-task", title: "Offline local memory", content: "Read this installed-runtime fixture without npm." }),
-    call(5, "memory_query", { project: "local-runtime", role: "builder", query: "installed-runtime" }),
-    call(6, "memory_task_end", { taskId: "local-runtime-task", completed: true }),
+    call(2, "task_start", { taskId: "local-runtime-task" }),
+    call(3, "context", { project: "local-runtime", role: "builder", taskId: "local-runtime-task" }),
+    call(4, "remember", { project: "local-runtime", role: "builder", taskId: "local-runtime-task", title: "Offline local memory", content: "Read this installed-runtime fixture without npm." }),
+    call(5, "history", { project: "local-runtime", role: "builder", query: "installed-runtime" }),
+    call(6, "task_end", { taskId: "local-runtime-task", completed: true }),
   ];
   child.child.stdin.end(requests.map((request) => JSON.stringify(request)).join("\n") + "\n");
   const replies = (await child).stdout.trim().split("\n").map((line) => JSON.parse(line));
@@ -204,7 +204,7 @@ test("CLI persists weekly and persona config and queries bounded SQLite journal 
   const first = await writeLog(vault, { project: "chosen-project", slug: "first-query", kind: "qa", title: "First query check", content: "cli-query-sentinel " + "evidence ".repeat(1000) }, { now });
   const second = await writeLog(vault, { project: "chosen-project", slug: "second-query", kind: "qa", title: "Second query check", content: "cli-query-sentinel second check" }, { now });
   const global = await longTermWrite(vault, { scope: "global", title: "Shared CLI fact", content: "global-cli-sentinel" }, { now });
-  const args = ["memory", "query", "--project", "chosen-project", "--from", "2026-11-16", "--to", "2026-11-16", "--week", "2026-47", "--kind", "log", "--query", "cli-query-sentinel", "--limit", "1"];
+  const args = ["memory", "history", "--project", "chosen-project", "--from", "2026-11-16", "--to", "2026-11-16", "--week", "2026-47", "--kind", "log", "--query", "cli-query-sentinel", "--limit", "1"];
   const pageOne = JSON.parse((await run(args)).stdout);
   const pageTwo = JSON.parse((await run([...args, "--offset", "1"])).stdout);
   assert.equal(pageOne.records.length, 1);
@@ -213,11 +213,11 @@ test("CLI persists weekly and persona config and queries bounded SQLite journal 
   assert.equal(pageTwo.hasMore, false);
   assert.deepEqual(new Set([...pageOne.records, ...pageTwo.records].map((row) => row.id)), new Set([first.id, second.id]));
   assert.ok([...pageOne.records, ...pageTwo.records].every((row) => row.content.length <= 2000 && row.ref === `memory:${row.id}`));
-  const inferred = JSON.parse((await run(["memory", "query", "--kind", "log"])).stdout);
+  const inferred = JSON.parse((await run(["memory", "history", "--kind", "log"])).stdout);
   assert.equal(inferred.project, "chosen-project");
-  const shared = JSON.parse((await run(["memory", "query", "--scope", "global", "--query", "global-cli-sentinel"])).stdout);
+  const shared = JSON.parse((await run(["memory", "history", "--scope", "global", "--query", "global-cli-sentinel"])).stdout);
   assert.deepEqual(shared.records.map((row) => row.id), [global.id]);
-  await assert.rejects(run(["memory", "query", "--project", "chosen-project", "--limit", "0"]));
+  await assert.rejects(run(["memory", "history", "--project", "chosen-project", "--limit", "0"]));
   const disabled = JSON.parse((await run(["config", "--persona", "off"])).stdout);
   assert.equal(disabled.persona.enabled, false);
   assert.equal(JSON.parse((await run(["persona", "--scope", "global"])).stdout).enabled, false);
@@ -245,20 +245,20 @@ test("CLI memory commands call tier exports with project, global and role scopes
   const { vault, repo, run } = await fixture(t);
   await execFileAsync("git", ["init", "-q", "-b", "main", repo]);
   await run(["setup", "--mode", "manual", "--project", "chosen-project"]);
-  const project = JSON.parse((await run(["memory", "sleep", "--project", "chosen-project"])).stdout);
+  const project = JSON.parse((await run(["memory", "maintain", "--project", "chosen-project"])).stdout);
   assert.equal(project.scope, "project");
   assert.equal(project.project, "chosen-project");
-  const inferred = JSON.parse((await run(["memory", "sleep"])).stdout);
+  const inferred = JSON.parse((await run(["memory", "maintain"])).stdout);
   assert.equal(inferred.project, "chosen-project");
-  const global = JSON.parse((await run(["memory", "sleep", "--scope", "global", "--role", "builder"])).stdout);
+  const global = JSON.parse((await run(["memory", "maintain", "--scope", "global", "--role", "builder"])).stdout);
   assert.equal(global.scope, "global");
   assert.equal(global.role, "builder");
   const migrated = JSON.parse((await run(["memory", "migrate", "--project", "chosen-project"])).stdout);
   assert.ok(Array.isArray(migrated.imported));
   await assert.rejects(run(["memory", "migrate"]), /requires --project/);
-  await assert.rejects(run(["memory", "sleep", "--scope", "global", "--project", "chosen-project"]), /Choose --project/);
-  await assert.rejects(run(["memory", "sleep", "--scope", "team"]), /--scope must be global/);
-  await assert.rejects(run(["memory", "sleep", "--role", "unknown"]));
+  await assert.rejects(run(["memory", "maintain", "--scope", "global", "--project", "chosen-project"]), /Choose --project/);
+  await assert.rejects(run(["memory", "maintain", "--scope", "team"]), /--scope must be global/);
+  await assert.rejects(run(["memory", "maintain", "--role", "unknown"]));
   await assert.rejects(run(["memory", "unknown"]));
   assert.equal(loadSettings(vault).team.enabled, false);
 });
@@ -297,7 +297,7 @@ for (const runtime of [
       if (process.argv[1] === "seed") {
         for (const scope of scopes.slice(1)) {
           for (let index = 0; index < 5; index++) {
-            await tiers.recordToolUse(vault, "long_memory_read", scope, scope);
+            await tiers.recordToolUse(vault, "long_read", scope, scope);
           }
         }
       } else {
@@ -380,7 +380,7 @@ for (const runtime of [
       return JSON.parse(reply.result.content[0].text);
     };
     try {
-    const disconnected = (await call("vault_context", { role: "builder" })).memoryMaintenance;
+    const disconnected = (await call("context", { role: "builder" })).memoryMaintenance;
     assert.equal(disconnected.lifecycle.status, "not_connected");
     assert.equal(disconnected.reviewWork, null);
     const initialRevision = (await inspect()).maintenance.contextRevision;
@@ -393,13 +393,13 @@ for (const runtime of [
     const taskId = snapshot.tasks[0].taskId;
     assert.equal(snapshot.maintenance.contextRevision, initialRevision);
     assert.equal(snapshot.maintenance.deferred, true);
-    const firstContextA = await call("vault_context", { role: "builder" });
+    const firstContextA = await call("context", { role: "builder" });
     assert.equal(firstContextA.memoryMaintenance.lifecycle.status, "connected");
     assert.equal(firstContextA.memoryMaintenance.lifecycle.taskId, taskId);
     assert.equal(firstContextA.memoryMaintenance.reviewWork.taskId, taskId);
     assert.deepEqual(firstContextA.memoryMaintenance.reviewWork.namespaces, []);
     assert.equal(firstContextA.memoryMaintenance.contextRevision, initialRevision);
-    assert.equal((await call("vault_context", { role: "builder" })).memoryMaintenance.reviewWork, null);
+    assert.equal((await call("context", { role: "builder" })).memoryMaintenance.reviewWork, null);
     hooks.get("tool_call")({ toolName: "edit", toolCallId: "edit-one", input: { path: "source.mjs" } }, ctx);
     hooks.get("tool_execution_end")({ toolName: "edit", toolCallId: "edit-one" }, ctx);
     await hooks.get("turn_end")({}, ctx);
@@ -427,14 +427,14 @@ for (const runtime of [
     for (const [index, stopReason] of ["aborted", "error", "length", undefined].entries()) {
       await start("Cancelled task " + index);
       if (index === 0) {
-        const firstContextB = await call("vault_context", { role: "builder" });
+        const firstContextB = await call("context", { role: "builder" });
         assert.equal(firstContextB.memoryMaintenance.lifecycle.status, "connected");
         assert.notEqual(firstContextB.memoryMaintenance.reviewWork.taskId, taskId);
         const namespaces = firstContextB.memoryMaintenance.reviewWork.namespaces;
         assert.equal(namespaces.length, 4);
         assert.ok(namespaces.every((namespace) => namespace.tickets.every((ticket) => ticket.state === "ready")));
         assert.equal(firstContextB.memoryMaintenance.contextRevision, completedRevision);
-        const repeated = await call("vault_context", { role: "builder" });
+        const repeated = await call("context", { role: "builder" });
         assert.equal(repeated.memoryMaintenance.reviewWork, null);
         assert.equal(repeated.memoryMaintenance.contextRevision, completedRevision);
       }

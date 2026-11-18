@@ -28,9 +28,9 @@ Usage:
   vault-cli memory stats [--project <id>] [--path <path>]
   vault-cli memory diagnose [--project <id>] [--path <path>]
   vault-cli hooks install|status|uninstall --host claude|codex [--local] [--dry-run] [--path <path>]
-  vault-cli memory query [--project <id> | --scope global] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--week YYYY-WW] [--query <text>]
+  vault-cli memory history [--project <id> | --scope global] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--week YYYY-WW] [--query <text>]
   vault-cli persona [--project <id> | --scope global] [--path <path>]
-  vault-cli memory sleep [--project <id> | --scope global] [--role <role>] [--path <path>]
+  vault-cli memory maintain [--project <id> | --scope global] [--role <role>] [--path <path>]
   vault-cli memory migrate --project <id> [--prune-legacy] [--path <path>]
   vault-cli init [--path <path>]
   vault-cli scaffold --project <id> [--title <title>] [--path <path>]
@@ -242,10 +242,10 @@ try {
 
     case "memory": {
       const action = args[1];
-      if (!["sleep", "migrate", "query", "recall", "stats", "diagnose"].includes(action)) throw new Error("memory requires sleep, migrate, query, recall, stats or diagnose.");
+      if (!["maintain", "migrate", "history", "recall", "stats", "diagnose"].includes(action)) throw new Error("memory requires maintain, migrate, history, recall, stats or diagnose.");
       const values = ["--project", "--path"];
-      if (["sleep", "query", "recall"].includes(action)) values.push("--scope", "--role");
-      if (action === "query") values.push("--from", "--to", "--week", "--query", "--kind", "--limit", "--offset");
+      if (["maintain", "history", "recall"].includes(action)) values.push("--scope", "--role");
+      if (action === "history") values.push("--from", "--to", "--week", "--query", "--kind", "--limit", "--offset");
       if (action === "recall") values.push("--query", "--limit");
       const flags = commandFlags(2, values, action === "migrate" ? ["--prune-legacy"] : []);
       if (flags["--scope"] && flags["--scope"] !== "global") throw new Error("--scope must be global; use --project for project memory.");
@@ -254,7 +254,7 @@ try {
       const tiers = await import("../lib/memory-tiers.mjs");
       const options = { cwd: process.cwd(), project: flags["--project"], scope: flags["--scope"], role: flags["--role"], pruneLegacy: flags["--prune-legacy"] };
       let result;
-      if (action === "query") {
+      if (action === "history") {
         const { queryWeeklyMemory } = await import("../lib/weekly-memory.mjs");
         result = await queryWeeklyMemory(targetVaultPath, {
           ...options, query: flags["--query"], from: flags["--from"], to: flags["--to"], week: flags["--week"], kind: flags["--kind"],
@@ -267,7 +267,7 @@ try {
       } else if (action === "stats" || action === "diagnose") {
         const inspect = await import("../lib/memory-inspect.mjs");
         result = await (action === "stats" ? inspect.memoryStats : inspect.diagnoseMemory)(targetVaultPath, { cwd: process.cwd(), project: flags["--project"] });
-      } else result = action === "sleep" ? await tiers.sleepMemory(targetVaultPath, options) : await tiers.migrateLongMemory(targetVaultPath, options);
+      } else result = action === "maintain" ? await tiers.sleepMemory(targetVaultPath, options) : await tiers.migrateLongMemory(targetVaultPath, options);
       console.log(JSON.stringify(result, null, 2));
       break;
     }

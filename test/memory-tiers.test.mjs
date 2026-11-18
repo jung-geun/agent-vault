@@ -90,7 +90,7 @@ test("legacy import preserves source bytes and reports source conflicts", async 
   assert.equal((await longMemoryRead(vault, { project: "alpha", id: first.imported[0].id })).content, content);
 });
 
-test("sleep consolidates exact imported duplicates without losing originals", async (t) => {
+test("maintain consolidates exact imported duplicates without losing originals", async (t) => {
   const vault = await fixture(t);
   const target = { project: "alpha" };
   const entry = { ...target, title: "Retry invariant", content: "Use jitter.", tags: ["imported"] };
@@ -98,7 +98,7 @@ test("sleep consolidates exact imported duplicates without losing originals", as
   const two = await longTermWrite(vault, entry, { now: NOW, sourcePath: "source-two" });
   assert.notEqual(one.id, two.id);
   await saveSettings(vault, { review: { thresholds: [1] } });
-  await recordToolUse(vault, "long_memory_write", target, two, { now: NOW });
+  await recordToolUse(vault, "remember", target, two, { now: NOW });
   const report = await sleepMemory(vault, target, { now: NOW });
   assert.deepEqual(report.archived, [two.id]);
   assert.deepEqual((await longMemorySearch(vault, target)).results.map((row) => row.id), [one.id]);
@@ -111,9 +111,9 @@ test("skill review stores reusable procedure with provenance, never executes con
   const target = { scope: "global", role: "builder" };
   await saveSettings(vault, { review: { thresholds: [2], hotReadCount: 1 } });
   const saved = await longTermWrite(vault, { ...target, title: "Build lesson", content: "Run a targeted compiler check before packaging." });
-  await recordToolUse(vault, "long_memory_write", target, saved);
+  await recordToolUse(vault, "remember", target, saved);
   const read = await longMemoryRead(vault, { ...target, id: saved.id });
-  const [ticket] = await recordToolUse(vault, "long_memory_read", target, read);
+  const [ticket] = await recordToolUse(vault, "long_read", target, read);
   const report = await sleepMemory(vault, target);
   assert.ok(report.skillCandidates.some((item) => item.id === saved.id));
   const skill = await resolveMemoryReview(vault, { ...target, reviewId: ticket.id, memoryId: saved.id, action: "skill", title: "Build validation procedure", content: "When packaging changes, run the targeted compiler check, inspect errors, then package only after success.", note: "Repeated successful checks support this procedure." });
@@ -128,7 +128,7 @@ test("failed review actions leave the ticket and memory unchanged", async (t) =>
   await saveSettings(vault, { review: { thresholds: [1] } });
   const target = { project: "alpha" };
   const saved = await longTermWrite(vault, { ...target, title: "Fact", content: "Retain this fact." });
-  const [ticket] = await recordToolUse(vault, "long_memory_write", target, saved);
+  const [ticket] = await recordToolUse(vault, "remember", target, saved);
   await sleepMemory(vault, target);
   await assert.rejects(resolveMemoryReview(vault, { ...target, reviewId: ticket.id, action: "supersede", memoryId: 999999, title: "Wrong source", content: "Do not create this.", note: "Source does not exist." }), { code: "not_found" });
   assert.equal((await longMemoryRead(vault, { ...target, id: saved.id })).status, "active");
@@ -146,7 +146,7 @@ test("overlapping tasks and cancellation defer all automatic memory changes", as
   await assert.rejects(longTermWrite(vault, entry), { code: "memory_task_ambiguous" });
   const one = await longTermWrite(vault, { ...entry, taskId: "task-a" }, { sourcePath: "one" });
   const two = await longTermWrite(vault, { ...entry, taskId: "task-b" }, { sourcePath: "two" });
-  const [ticket] = await recordToolUse(vault, "long_memory_write", target, two);
+  const [ticket] = await recordToolUse(vault, "remember", target, two);
   const midTask = await getTieredContext(vault, { project: "alpha", role: "builder" });
   assert.equal(midTask.memoryMaintenance.contextRevision, firstTask.contextRevision);
   assert.ok(midTask.memoryReviews.every((review) => review.reviews.length === 0 && review.skillCandidates.length === 0));
@@ -194,7 +194,7 @@ test("completion below the review threshold leaves review maintenance unchanged"
   const vault = await fixture(t);
   const started = await beginMemoryTask(vault, { taskId: "small-task" });
   const saved = await longTermWrite(vault, { project: "alpha", title: "Small task", content: "One operation." });
-  await recordToolUse(vault, "long_memory_write", {}, saved);
+  await recordToolUse(vault, "remember", {}, saved);
   const ended = await endMemoryTask(vault, { taskId: "small-task", completed: true });
   assert.deepEqual(ended.maintenance, []);
   assert.equal(ended.contextRevision, started.contextRevision);

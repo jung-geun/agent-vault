@@ -57,10 +57,10 @@ npx skills add jung-geun/agent-vault -g
 
 工作周按周一到周日计算，进行中的任务即使跨周也保持其原来的工作周。Markdown 只保留设定的 **1～6 个月**，SQLite 记录仍可持续查询。
 
-persona 和已审查的记忆变更会在任务正常结束后的空闲时刻生效。在没有 hooks 的环境中，可以在工作结束后请求 `agent-vault sleep`。已有的按日文件通过 `agent-vault migrate` 导入，删除原文件需要另行明确请求。
+persona 和已审查的记忆变更会在任务正常结束后的空闲时刻生效。在没有 hooks 的环境中，可以在工作结束后请求 `agent-vault maintain`。已有的按日文件通过 `agent-vault migrate` 导入，删除原文件需要另行明确请求。
 
 ### hooks 何时运行以及各工具的作用
 
-在 OMP、Claude Code 和 Codex 中，hooks 会在你发送提示时启动任务，记录你的指示和每个修改文件的回合，并在智能体结束时关闭任务。请智能体执行 `agent-vault install` 即可完成设置：对 Claude Code 和 Codex 会运行 `vault-cli hooks install --host claude|codex`，之后 Codex 会要求你在 `/hooks` 中审查并信任这些 hooks 一次。维护和 persona 更新只会在任务正常完成且没有其他任务进行时运行。Cursor 等其他环境不会安装 hooks，需要改为请求 `agent-vault sleep`。确切的事件与时机、全部 MCP 工具、实际验证过的范围以及失败时的行为，请参阅 **[spec.md](spec.md)**。
+在 OMP、Claude Code 和 Codex 中，hooks 会在你发送提示时启动任务，记录你的指示和每个修改文件的回合，并在智能体结束时关闭任务。请智能体执行 `agent-vault install` 即可完成设置：对 Claude Code 和 Codex 会运行 `vault-cli hooks install --host claude|codex`，之后 Codex 会要求你在 `/hooks` 中审查并信任这些 hooks 一次。维护和 persona 更新只会在任务正常完成且没有其他任务进行时运行。Cursor 等其他环境不会安装 hooks，需要改为请求 `agent-vault maintain`。确切的事件与时机、全部 MCP 工具、实际验证过的范围以及失败时的行为，请参阅 **[spec.md](spec.md)**。
 
 详细的工具约定请参阅 [SKILL.md](SKILL.md)。官方的 [Skills 自定义](https://www.skills.sh/docs/customize)作用于仓库的介绍页面，不会为正在运行的智能体注册命令或 hooks。

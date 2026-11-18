@@ -180,7 +180,7 @@ test("recall terms drop filler and Korean particles; ranking needs two matching 
   assert.deepEqual(rankMemories(rows, "the and of"), []);
 });
 
-test("memory_recall ranks across project and global knowledge and counts as a read", async (t) => {
+test("recall ranks across project and global knowledge and counts as a read", async (t) => {
   const { vault, repo } = await fixture(t);
   await longTermWrite(vault, { project: "alpha", role: undefined, title: "Release process", content: "Releases use pnpm and git tags; the deploy job runs after CI is green." });
   await longTermWrite(vault, { scope: "global", title: "Review preference", content: "Prefer small pull requests with deploy notes." });
@@ -212,7 +212,7 @@ test("automatic recall is off by default, preloads background context when enabl
   assert.doesNotMatch(unrelated.out.hookSpecificOutput.additionalContext, /recalled memory/);
 });
 
-test("memory_stats and memory_diagnose are read-only and give an action for every problem", async (t) => {
+test("stats and diagnose are read-only and give an action for every problem", async (t) => {
   const { vault, repo } = await fixture(t);
   assert.deepEqual(await memoryStats(path.join(vault, "missing")), { vaultReady: false, message: "The vault is not initialized; run setup or init first." });
   await longTermWrite(vault, { project: "alpha", title: "Fact", content: "Body of a durable fact." });
@@ -251,7 +251,7 @@ test("the MCP server recognises the task a Claude hook opened, through the share
       child.kill();
       resolve(JSON.parse(JSON.parse(buffer.split("\n")[0]).result.content[0].text));
     });
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "vault_context", arguments: { role: "builder" } } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "context", arguments: { role: "builder" } } })}\n`);
   });
   const claude = await call("claude");
   assert.equal(claude.memoryMaintenance.lifecycle.status, "connected");

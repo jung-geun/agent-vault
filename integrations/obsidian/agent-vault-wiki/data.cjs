@@ -2,8 +2,21 @@
 // @agent-vault-data:start
 const ROLES = new Set(["coordinator", "builder", "investigator", "reviewer"]);
 const CURATED_TYPES = new Set(["project", "index", "spec", "concept", "decision", "source", "design", "template"]);
-const ACCESS_TOOLS = new Set(["memory_read", "memory_search", "memory_list", "agent_memory_read", "short_memory_read"]);
-const WRITE_TOOLS = new Set(["memory_write", "agent_memory_write", "agent_handoff", "short_memory_write", "long_memory_write", "worktree_record", "log_write"]);
+const ACCESS_TOOLS = new Set(["doc_read", "doc_search", "doc_list", "role_read", "short_read"]);
+const WRITE_TOOLS = new Set(["doc_write", "role_write", "handoff", "short_write", "remember", "worktree_record", "log_write"]);
+// Read access-log rows written before the tool rename.
+const LEGACY_TOOL_NAMES = {
+  memory_read: "doc_read",
+  memory_search: "doc_search",
+  memory_list: "doc_list",
+  memory_write: "doc_write",
+  agent_memory_read: "role_read",
+  agent_memory_write: "role_write",
+  agent_handoff: "handoff",
+  short_memory_read: "short_read",
+  short_memory_write: "short_write",
+  long_memory_write: "remember",
+};
 
 function parseAccessLog(text) {
   const events = [];
@@ -14,7 +27,7 @@ function parseAccessLog(text) {
       if (!value || typeof value !== "object" || typeof value.ts !== "string" || typeof value.tool !== "string") continue;
       events.push({
         ts: value.ts,
-        tool: value.tool,
+        tool: LEGACY_TOOL_NAMES[value.tool] ?? value.tool,
         project: typeof value.project === "string" ? value.project : null,
         role: ROLES.has(value.role) ? value.role : null,
         path: typeof value.path === "string" ? value.path : null,

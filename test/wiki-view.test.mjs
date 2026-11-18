@@ -7,9 +7,9 @@ const { accessMetrics, deriveProvenance, matchesNote, parseAccessLog } = require
 
 test("access log parser ignores malformed rows and projects only safe fields", () => {
   const events = parseAccessLog([
-    JSON.stringify({ ts: "2026-11-16T10:00:00.000Z", tool: "memory_search", role: "builder", paths: ["projects/alpha/wiki/topic.md"], query: "secret query", content: "private body" }),
+    JSON.stringify({ ts: "2026-11-16T10:00:00.000Z", tool: "doc_search", role: "builder", paths: ["projects/alpha/wiki/topic.md"], query: "secret query", content: "private body" }),
     "{truncated",
-    JSON.stringify({ ts: 12, tool: "memory_read" }),
+    JSON.stringify({ ts: 12, tool: "doc_read" }),
   ].join("\n"));
   assert.equal(events.length, 1);
   assert.equal(events[0].role, "builder");
@@ -36,10 +36,10 @@ test("provenance labels authored properties separately from path inference", () 
 test("per-note metrics count observed reads and report only logged creation", () => {
   const path = "projects/alpha/wiki/topic.md";
   const events = parseAccessLog([
-    { ts: "2026-11-16T10:00:00.000Z", tool: "memory_search", role: "builder", paths: [path] },
-    { ts: "2026-11-16T10:05:00.000Z", tool: "memory_read", path },
-    { ts: "2026-11-16T10:06:00.000Z", tool: "memory_write", project: "alpha", role: "builder", path, created: true },
-    { ts: "2026-11-16T10:07:00.000Z", tool: "memory_write", project: "alpha", role: "reviewer", path, created: false },
+    { ts: "2026-11-16T10:00:00.000Z", tool: "doc_search", role: "builder", paths: [path] },
+    { ts: "2026-11-16T10:05:00.000Z", tool: "doc_read", path },
+    { ts: "2026-11-16T10:06:00.000Z", tool: "doc_write", project: "alpha", role: "builder", path, created: true },
+    { ts: "2026-11-16T10:07:00.000Z", tool: "doc_write", project: "alpha", role: "reviewer", path, created: false },
   ].map((event) => JSON.stringify(event)).join("\n"));
   assert.deepEqual(accessMetrics(events, path), {
     count: 2,
@@ -47,6 +47,19 @@ test("per-note metrics count observed reads and report only logged creation", ()
     createdByRole: "builder",
     createdByProject: "alpha",
   });
+});
+
+test("legacy access-log tools count like their current names", () => {
+  const path = "projects/alpha/agents/builder/memory.md";
+  const read = { ts: "2026-11-16T10:05:00.000Z", path };
+  const write = { ts: "2026-11-16T10:00:00.000Z", path, project: "alpha", role: "builder", created: true };
+  const metrics = (readTool, writeTool) => accessMetrics(parseAccessLog([
+    { ...read, tool: readTool },
+    { ...write, tool: writeTool },
+  ].map((event) => JSON.stringify(event)).join("\n")), path);
+  const current = metrics("doc_read", "role_write");
+  assert.deepEqual(current, { count: 1, lastAccess: read.ts, createdByRole: "builder", createdByProject: "alpha" });
+  assert.deepEqual(metrics("memory_read", "agent_memory_write"), current);
 });
 
 test("note filters match title, path, summary, project, role, and type", () => {

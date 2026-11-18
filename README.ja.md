@@ -57,10 +57,10 @@ npx skills add jung-geun/agent-vault -g
 
 業務週は月曜日から日曜日までで、進行中のタスクは週が変わっても元の週を維持します。Markdown は設定した **1〜6 か月** だけ保持し、SQLite の記録は引き続き検索できます。
 
-persona とレビュー済みのメモリ変更は、正常なタスク終了後のアイドル時に反映します。hooks がない環境では、作業の終了後に `agent-vault sleep` を依頼できます。既存の日次ファイルは `agent-vault migrate` で取り込み、元ファイルの削除には別途、明示的な依頼が必要です。
+persona とレビュー済みのメモリ変更は、正常なタスク終了後のアイドル時に反映します。hooks がない環境では、作業の終了後に `agent-vault maintain` を依頼できます。既存の日次ファイルは `agent-vault migrate` で取り込み、元ファイルの削除には別途、明示的な依頼が必要です。
 
 ### hooks が動作するタイミングとツールごとの役割
 
-OMP、Claude Code、Codex では、hooks がプロンプト送信時にタスクを開始し、ユーザーの指示とファイルを編集したターンを記録し、エージェントの終了時にタスクを閉じます。エージェントに `agent-vault install` を依頼すると設定され、Claude Code と Codex では `vault-cli hooks install --host claude|codex` が実行されます。Codex ではその後 `/hooks` で hooks を一度確認して信頼する必要があります。メンテナンスと persona の更新は、タスクが正常に完了し、他のタスクが進行中でないときにのみ実行されます。Cursor などそれ以外の環境には hooks はインストールされず、代わりに `agent-vault sleep` を依頼します。正確なイベントとタイミング、すべての MCP ツール、実際に検証した範囲、失敗時の動作は **[spec.md](spec.md)** を参照してください。
+OMP、Claude Code、Codex では、hooks がプロンプト送信時にタスクを開始し、ユーザーの指示とファイルを編集したターンを記録し、エージェントの終了時にタスクを閉じます。エージェントに `agent-vault install` を依頼すると設定され、Claude Code と Codex では `vault-cli hooks install --host claude|codex` が実行されます。Codex ではその後 `/hooks` で hooks を一度確認して信頼する必要があります。メンテナンスと persona の更新は、タスクが正常に完了し、他のタスクが進行中でないときにのみ実行されます。Cursor などそれ以外の環境には hooks はインストールされず、代わりに `agent-vault maintain` を依頼します。正確なイベントとタイミング、すべての MCP ツール、実際に検証した範囲、失敗時の動作は **[spec.md](spec.md)** を参照してください。
 
 詳細なツール仕様は [SKILL.md](SKILL.md) を参照してください。公式の [Skills のカスタマイズ](https://www.skills.sh/docs/customize) はリポジトリの紹介ページに適用されるものであり、実行中のエージェントのコマンドや hooks を代わりに登録するものではありません。

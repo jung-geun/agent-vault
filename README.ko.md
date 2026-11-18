@@ -57,10 +57,10 @@ npx skills add jung-geun/agent-vault -g
 
 업무 주차는 월~일 기준이며, 진행 중인 태스크는 주가 바뀌어도 원래 주차를 유지합니다. Markdown은 설정한 **1~6개월**만 보관하고 SQLite 기록은 계속 조회할 수 있습니다.
 
-persona와 검토된 메모리 변경은 정상 태스크 종료 후 유휴 시점에 반영합니다. hooks가 없는 환경에서는 작업을 마친 뒤 `agent-vault sleep`을 요청할 수 있습니다. 기존 일자별 파일은 `agent-vault migrate`로 가져오며, 원본 삭제는 별도의 명시적 요청이 있어야 합니다.
+persona와 검토된 메모리 변경은 정상 태스크 종료 후 유휴 시점에 반영합니다. hooks가 없는 환경에서는 작업을 마친 뒤 `agent-vault maintain`을 요청할 수 있습니다. 기존 일자별 파일은 `agent-vault migrate`로 가져오며, 원본 삭제는 별도의 명시적 요청이 있어야 합니다.
 
 ### hooks가 동작하는 시점과 도구별 역할
 
-OMP, Claude Code, Codex에서는 hooks가 프롬프트를 보낼 때 태스크를 시작하고, 사용자 지시와 파일을 수정한 턴을 기록하며, 에이전트가 끝나면 태스크를 닫습니다. 에이전트에게 `agent-vault install`을 요청하면 설정해 주며, Claude Code와 Codex는 `vault-cli hooks install --host claude|codex`를 실행합니다. Codex는 이후 `/hooks`에서 hooks를 한 번 검토하고 신뢰해야 합니다. 유지보수와 persona 갱신은 태스크가 정상 완료되고 다른 태스크가 진행 중이지 않을 때만 실행됩니다. Cursor 같은 다른 환경에는 hooks가 설치되지 않으며 `agent-vault sleep` 요청으로 대신합니다. 정확한 이벤트와 시점, 모든 MCP 도구, 실제로 검증한 범위, 실패 시 동작은 **[spec.md](spec.md)**를 참고하세요.
+OMP, Claude Code, Codex에서는 hooks가 프롬프트를 보낼 때 태스크를 시작하고, 사용자 지시와 파일을 수정한 턴을 기록하며, 에이전트가 끝나면 태스크를 닫습니다. 에이전트에게 `agent-vault install`을 요청하면 설정해 주며, Claude Code와 Codex는 `vault-cli hooks install --host claude|codex`를 실행합니다. Codex는 이후 `/hooks`에서 hooks를 한 번 검토하고 신뢰해야 합니다. 유지보수와 persona 갱신은 태스크가 정상 완료되고 다른 태스크가 진행 중이지 않을 때만 실행됩니다. Cursor 같은 다른 환경에는 hooks가 설치되지 않으며 `agent-vault maintain` 요청으로 대신합니다. 정확한 이벤트와 시점, 모든 MCP 도구, 실제로 검증한 범위, 실패 시 동작은 **[spec.md](spec.md)**를 참고하세요.
 
 세부 도구 계약은 [SKILL.md](SKILL.md)를 참고하세요. 공식 [Skills 커스터마이징](https://www.skills.sh/docs/customize)은 저장소 소개 화면에 적용되며, 실행 중인 에이전트의 명령이나 hooks를 대신 등록하지는 않습니다.

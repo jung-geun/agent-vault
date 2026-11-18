@@ -33,11 +33,11 @@ The plugin must label provenance by certainty: frontmatter-authored, path-derive
 
 ## Access-event contract
 
-Track successful MCP calls to `memory_read`, `memory_search`, `memory_list`, `memory_write`, `agent_memory_read`, `agent_memory_write`, `agent_handoff`, `short_memory_read`, `short_memory_write`, `long_memory_write`, `worktree_list`, `worktree_record`, `project_list`, `project_scaffold`, `log_write`, and `vault_context`.
+Track successful MCP calls to `doc_read`, `doc_search`, `doc_list`, `doc_write`, `role_read`, `role_write`, `handoff`, `short_read`, `short_write`, `remember`, `worktree_list`, `worktree_record`, `project_list`, `project_create`, `log_write`, and `context`. For tools used in note access summaries, the plugin maps old tool names from pre-rename rows to the new names when it reads them.
 
 Each append-only JSONL event in `.agent-vault/access.jsonl` stores timestamp, tool, project when known, declared role when known, direct/result note paths, result count, and whether a returned write created a file. Result paths are capped at 100. The logger omits query text, content, hashes, cwd, prompts, and absolute paths. Failed MCP calls do not count; log-write failures do not fail the MCP operation. The MCP process can opt out with `AGENT_VAULT_DISABLE_ACCESS_LOG=1`; deleting the JSONL file resets recorded history.
 
-Role comes from an explicit role argument, the most recent successful `vault_context` declaration, or a role-bearing path. This is a declared role, not verified agent identity. Reads before logging starts cannot be reconstructed. Search/list events track returned paths (up to 100) so the view can count observed note exposure; lookup counts exclude human Obsidian opens and writes.
+Role comes from an explicit role argument, the most recent successful `context` declaration, or a role-bearing path. This is a declared role, not verified agent identity. Reads before logging starts cannot be reconstructed. Search/list events track returned paths (up to 100) so the view can count observed note exposure; lookup counts exclude human Obsidian opens and writes.
 
 ### Shipped behavior
 

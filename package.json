@@ -30,6 +30,7 @@
     "lib/knowledge-review.mjs",
     "lib/memory-db-migration.mjs",
     "lib/memory-db.mjs",
+    "lib/memory-identity.mjs",
     "lib/memory-inspect.mjs",
     "lib/memory-store.mjs",
     "lib/memory-tiers.mjs",

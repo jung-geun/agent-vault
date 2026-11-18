@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,22 +10,24 @@ import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   activeMemoryTasks, activityOf, closeMemoryDbs, dbTransaction, deferredReviews, embeddingCoverage,
-  finishMemoryTask, getEmbeddings, getMemory, getReviewAction, insertMemory,
+  finishMemoryTask, getEmbeddings, getMemory, getMeta, getReviewAction, insertMemory,
   memoryDbFile, memoryEmbeddingInput, openMemoryDb, openReviews, openVaultMemoryDb,
   putEmbeddings, queueMemoryFeedback, recordActivity, releaseReviews, reviewFeedback,
   resolveReviewRow, searchMemories, setStatus, stageReviewAction,
 } from "../lib/memory-db.mjs";
+import { vaultDatabaseId } from "../lib/memory-identity.mjs";
 import { beginMemoryTask, longMemoryRead } from "../lib/memory-tiers.mjs";
 import { applyPersona, observePersona, readPersona, resolvePersona } from "../lib/persona.mjs";
 import { loadDatabaseConfig, loadSettings, saveSettings } from "../lib/settings.mjs";
 import { teamRecall, teamRemember } from "../lib/team-memory.mjs";
-import { initVault, scaffoldProject } from "../lib/vault-core.mjs";
+import { getVaultStatus, initVault, scaffoldProject } from "../lib/vault-core.mjs";
 import { beginWeeklyTask, queryWeeklyMemory, syncWeeklyMemory, weeklyAttribution } from "../lib/weekly-memory.mjs";
 
 const exec = promisify(execFile);
 const cli = fileURLToPath(new URL("../bin/vault-cli.mjs", import.meta.url));
 const storageModule = new URL("../lib/memory-db.mjs", import.meta.url).href;
 const overrides = ["AGENT_VAULT_DB", "AGENT_VAULT_TEAM_DB"].flatMap((prefix) => ["DRIVER", "URL", "URL_FILE"].map((suffix) => `${prefix}_${suffix}`));
+const identityFile = (vault) => path.join(vault, ".agent-vault", "vault-id");
 const beforeWeek = new Date("2026-11-15T12:00:00.000Z");
 const now = new Date("2026-11-18T12:00:00.000Z");
 const policy = { thresholds: [2], repeatEvery: 10 };
@@ -278,6 +280,7 @@ async function migrationContract(sourceVault, source, vault, driver) {
     persona_profiles: 1, persona_patterns: 1, persona_evidence: 1, persona_decisions: 1,
   })) assert.equal(preview.counts[table], count, table);
   assert.ok(preview.counts.meta >= 1);
+  await assert.rejects(stat(identityFile(vault)), code("ENOENT"));
   assert.deepEqual(await readFile(source.file), source.bytes);
   await assert.rejects(stat(memoryDbFile(vault)), code("ENOENT"));
   const wrongSource = await runCli(vault, [...from, "--team", "--dry-run"], offline);
@@ -301,6 +304,11 @@ async function migrationContract(sourceVault, source, vault, driver) {
   await assert.rejects(stat(memoryDbFile(vault)), code("ENOENT"));
 
   const db = await openVaultMemoryDb(vault, { existing: true });
+  const sourceId = vaultDatabaseId(sourceVault);
+  assert.ok(sourceId);
+  assert.equal(vaultDatabaseId(vault), sourceId);
+  assert.equal(getMeta(db, "vault_id"), sourceId);
+  assert.equal((await stat(identityFile(vault))).mode & 0o777, 0o600);
   assert.deepEqual(getMemory(db, source.memory.id), source.memory);
   assert.deepEqual(getMemory(db, source.prior.id), source.prior);
   assertVector(db, source.memory);
@@ -417,6 +425,77 @@ function scrub(error, dsn) {
   return sanitized;
 }
 
+async function unopenedStatus(vault, driver, dsn) {
+  const postgres = driver === "postgres";
+  const { default: sql } = await (postgres ? import("pg") : import("mysql2/promise"));
+  const session = postgres ? new sql.Client({ connectionString: dsn }) : await sql.createConnection(dsn);
+  if (postgres) await session.connect();
+  try {
+    // Use a separate native session to hold the same initialization lock.
+    const database = decodeURIComponent(new URL(dsn).pathname.slice(1));
+    const lockName = createHash("sha256").update(`agent-vault:${database}`).digest("hex");
+    if (postgres) await session.query("SELECT pg_advisory_lock(1769047371, 1296387395)");
+    else await session.execute("SELECT GET_LOCK(?, 5)", [lockName]);
+    const status = await getVaultStatus(vault);
+    assert.equal(status.ok, true);
+    assert.equal(status.memoryDatabaseError, undefined);
+    assert.ok(status.projects.every(({ agentMemoryCount }) => agentMemoryCount === 0));
+    await assert.rejects(stat(identityFile(vault)), code("ENOENT"));
+    const countSql = "SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_name = 'meta' AND table_schema = ";
+    const rows = postgres ? (await session.query(`${countSql}'public'`)).rows : (await session.query(`${countSql}DATABASE()`))[0];
+    assert.equal(Number(rows[0].n), 0);
+  } finally { await session.end(); }
+}
+
+async function checkVaultIsolation(root, driver, foreignUrl) {
+  const other = await fixture(root, "independent-vault", []);
+  process.env.AGENT_VAULT_DB_DRIVER = driver;
+  process.env.AGENT_VAULT_DB_URL = foreignUrl;
+  try {
+    await assert.rejects(openVaultMemoryDb(other, { existing: true }), code("database_vault_mismatch"));
+    await assert.rejects(stat(identityFile(other)), code("ENOENT"));
+    await assert.rejects(openVaultMemoryDb(other), code("database_vault_mismatch"));
+  } finally {
+    delete process.env.AGENT_VAULT_DB_DRIVER;
+    delete process.env.AGENT_VAULT_DB_URL;
+  }
+}
+
+async function checkHostOwnership(root, vault) {
+  const script = `
+    import assert from "node:assert/strict";
+    import os from "node:os";
+    import { syncBuiltinESMExports } from "node:module";
+    const [vault, hostname, taskId, pid] = process.argv.slice(1);
+    os.hostname = () => hostname;
+    syncBuiltinESMExports();
+    const { finishMemoryTask, openVaultMemoryDb, startMemoryTask, closeMemoryDbs } = await import(${JSON.stringify(storageModule)});
+    const db = await openVaultMemoryDb(vault);
+    try {
+      startMemoryTask(db, { taskId, ownerPid: Number(pid) });
+      if (taskId !== "remote-crash") assert.equal(finishMemoryTask(db, { taskId, completed: true }).ended, true);
+    } finally { closeMemoryDbs(); }
+  `;
+  const hostA = path.join(root, "host-a");
+  const hostB = path.join(root, "host-b");
+  const missingPid = 2147483000;
+  assert.throws(() => process.kill(missingPid, 0), code("ESRCH"));
+  const launch = (config, hostname, id, pid) => exec(process.execPath,
+    ["--input-type=module", "-e", script, vault, hostname, id, String(pid)],
+    { cwd: vault, env: { ...process.env, XDG_CONFIG_HOME: config }, timeout: 10_000 });
+  await launch(hostA, "same-name.local", "remote-crash", missingPid);
+  const db = await openVaultMemoryDb(vault);
+  const [remote] = activeMemoryTasks(db);
+  const file = path.join(hostA, "agent-vault", "host-id");
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  assert.equal((await readFile(file, "utf8")).trim(), remote.ownerHost);
+  await launch(hostB, "same-name.local", "independent-task", process.pid);
+  assert.deepEqual(activeMemoryTasks(db), [remote], "cannot probe a remote host's PID");
+  await launch(hostA, "renamed.local", "cleanup-task", process.pid);
+  assert.deepEqual(activeMemoryTasks(db), [], "a renamed host still reaps its own dead task");
+  assert.equal(db.prepare("SELECT status FROM memory_tasks WHERE id = 'remote-crash'").get().status, "cancelled");
+}
+
 async function idleReconnect(vault, db) {
   const idQuery = db.driver === "postgres" ? "SELECT pg_backend_pid() AS id" : "SELECT CONNECTION_ID() AS id";
   const { id } = db.prepare(idQuery).get();
@@ -450,6 +529,8 @@ for (const [driver, urlEnv, teamUrlEnv] of [
     const root = await realpath(await mkdtemp(path.join(tmpdir(), "agent-vault-sql-contract-")));
     t.after(() => rm(root, { recursive: true, force: true }));
     const saved = overrides.map((key) => process.env[key]);
+    const configHome = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = path.join(root, "config");
     for (const key of overrides) delete process.env[key];
     try {
       try {
@@ -458,6 +539,10 @@ for (const [driver, urlEnv, teamUrlEnv] of [
         const sourceVault = await fixture(root, "source", [migration]);
         const source = await seedMigration(sourceVault, migration);
         const vault = await fixture(root, "destination", [project, other, migration], urlEnv && { driver, urlEnv });
+        if (dsn) {
+          await unopenedStatus(vault, driver, dsn);
+          vaultDatabaseId(sourceVault, { create: true });
+        }
         // SQL destinations are single-use. Never truncate or drop anything, even on failure.
         await migrationContract(sourceVault, source, vault, driver);
         const db = await openVaultMemoryDb(vault);
@@ -469,6 +554,8 @@ for (const [driver, urlEnv, teamUrlEnv] of [
           assert.ok(memory.id > source.removed);
           assert.ok(reviewId > source.queued.review.id);
           assert.ok(persona.patternId > source.persona.patternId);
+          await checkVaultIsolation(root, driver, dsn);
+          await checkHostOwnership(root, vault);
           await teamContract(vault, driver, urlEnv, teamUrlEnv);
           const reconnected = await idleReconnect(vault, db);
           assertVector(reconnected, memory);
@@ -485,6 +572,8 @@ for (const [driver, urlEnv, teamUrlEnv] of [
     } catch (error) {
       throw dsn ? scrub(error, dsn) : error;
     } finally {
+      if (configHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = configHome;
       for (const [index, key] of overrides.entries()) {
         if (saved[index] === undefined) delete process.env[key];
         else process.env[key] = saved[index];

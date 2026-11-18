@@ -234,3 +234,29 @@ test("memory_stats and memory_diagnose are read-only and give an action for ever
   assert.equal(uninitialized.healthy, false);
   assert.ok(uninitialized.checks.find((item) => item.name === "vault").fix);
 });
+
+test("the MCP server recognises the task a Claude hook opened, through the shared host process", async (t) => {
+  const { root, vault, repo } = await fixture(t);
+  await runHook("claude", vault, base(repo, { hook_event_name: "UserPromptSubmit", prompt: "Plan the migration steps" }));
+  const serverPath = fileURLToPath(new URL("../bin/vault-mcp.mjs", import.meta.url));
+  const home = path.join(root, "home");
+  const call = (harness) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [serverPath, "--path", vault], { cwd: repo, env: { ...process.env, HOME: home, OMP_VAULT_PATH: vault, AGENT_VAULT_HARNESS: harness }, stdio: ["pipe", "pipe", "ignore"] });
+    let buffer = "";
+    const timer = setTimeout(() => { child.kill(); reject(new Error("MCP server timed out")); }, 15_000);
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk;
+      if (!buffer.includes("\n")) return;
+      clearTimeout(timer);
+      child.kill();
+      resolve(JSON.parse(JSON.parse(buffer.split("\n")[0]).result.content[0].text));
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "vault_context", arguments: { role: "builder" } } })}\n`);
+  });
+  const claude = await call("claude");
+  assert.equal(claude.memoryMaintenance.lifecycle.status, "connected");
+  assert.match(claude.memoryMaintenance.lifecycle.taskId, /^claude-/);
+  const generic = await call("generic");
+  assert.equal(generic.memoryMaintenance.lifecycle.status, "not_connected");
+  await runHook("claude", vault, base(repo, { hook_event_name: "Stop", last_assistant_message: "ok" }));
+});

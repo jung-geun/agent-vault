@@ -47,6 +47,8 @@ The vault location is dynamically resolved in order:
 4. User home `~/.vaultrc`
 5. Default fallback: `~/.vault` (fully compatible with Obsidian application)
 
+A `--path` that is empty or `OMP_VAULT_PATH` that still holds an unsubstituted `${...}` placeholder is an error, not a reason to fall through to a lower entry: a host that failed to fill in a setting must not silently use another vault. An empty `OMP_VAULT_PATH` is still treated as unset.
+
 ## 2. Directory Taxonomy
 
 ```

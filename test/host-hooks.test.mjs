@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { initVault, scaffoldProject } from "../lib/vault-core.mjs";
+import { initVault, resolveVaultPath, scaffoldProject } from "../lib/vault-core.mjs";
 import { installHooks, uninstallHooks, hooksStatus, hookConfigPath, hookCommand } from "../lib/hooks-install.mjs";
 import { codexPatchFiles, editedFiles, guardEvent, agentProcessId } from "../lib/host-hooks.mjs";
 import { queryTerms, rankMemories } from "../lib/recall.mjs";
@@ -302,4 +303,57 @@ test("a credential-shaped prompt is rejected from the journal and never reaches 
   assert.match(implementation.content, /Triggered by: \(no prompt recorded\)/);
   closeMemoryDbs();
   assert.equal(await vaultContains(vault, secret), null, "credential found in the vault after Stop");
+});
+
+test("an empty or unsubstituted vault path stops with a visible message instead of using the default vault", async (t) => {
+  const { home, repo } = await fixture(t);
+  // The default vault exists and is registered for this repository, so any silent fallback would record into it.
+  const fallback = path.join(home, ".vault");
+  await initVault(fallback);
+  await scaffoldProject(fallback, "alpha", "Alpha");
+  await writeFile(path.join(fallback, "_meta", "projects-index.md"), "| [Alpha](../projects/alpha/index.md) | alpha-repo | app | remote `origin` branch `main` | Node |\n");
+  const fallbackDb = path.join(fallback, ".agent-vault", "memory.db");
+  const run = (args, env = {}) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [hookBin, "--host", "claude", ...args], { cwd: repo, env: { ...process.env, HOME: home, OMP_VAULT_PATH: "", ...env }, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.on("error", reject);
+    child.on("close", () => resolve(stdout ? JSON.parse(stdout) : null));
+    child.stdin.end(JSON.stringify(base(repo, { hook_event_name: "UserPromptSubmit", prompt: "please add the trial feature to the project" })));
+  });
+  for (const [label, args, env, pattern] of [
+    ["empty --path", ["--path", ""], {}, /vault path option is empty/],
+    ["blank --path", ["--path", "   "], {}, /vault path option is empty/],
+    ["unsubstituted --path", ["--path", "${user_config.vault_path}"], {}, /unresolved placeholder/],
+    ["unsubstituted OMP_VAULT_PATH", [], { OMP_VAULT_PATH: "${user_config.vault_path}" }, /OMP_VAULT_PATH holds an unresolved placeholder/],
+  ]) {
+    const out = await run(args, env);
+    assert.match(out?.systemMessage ?? "", pattern, label);
+    assert.equal(out.hookSpecificOutput, undefined, `${label}: no context may be injected`);
+    assert.equal(existsSync(fallbackDb), false, `${label}: the default vault must not be touched`);
+  }
+  // An explicit path is honoured, and an empty OMP_VAULT_PATH keeps its long-standing meaning: use the default vault.
+  const explicit = await run(["--path", fallback]);
+  assert.match(explicit?.hookSpecificOutput?.additionalContext ?? "", /active memory task/);
+  assert.equal(existsSync(fallbackDb), true);
+  const viaEmptyEnv = await run([]);
+  assert.match(viaEmptyEnv?.hookSpecificOutput?.additionalContext ?? "", /active memory task/);
+});
+
+test("resolveVaultPath rejects blank and templated explicit paths but keeps its fallbacks", () => {
+  const saved = process.env.OMP_VAULT_PATH;
+  try {
+    delete process.env.OMP_VAULT_PATH;
+    for (const bad of ["", "  ", "${user_config.vault_path}", "/tmp/${HOME}/vault"]) assert.throws(() => resolveVaultPath(bad), Error, JSON.stringify(bad));
+    assert.equal(resolveVaultPath("/tmp/a b/vault"), path.resolve("/tmp/a b/vault"), "spaces and ordinary dollar signs are fine");
+    assert.equal(resolveVaultPath("/tmp/price$5/vault"), path.resolve("/tmp/price$5/vault"));
+    process.env.OMP_VAULT_PATH = "/tmp/from-env";
+    assert.equal(resolveVaultPath(undefined), path.resolve("/tmp/from-env"));
+    process.env.OMP_VAULT_PATH = "${x}";
+    assert.throws(() => resolveVaultPath(undefined), /OMP_VAULT_PATH holds an unresolved placeholder/);
+    process.env.OMP_VAULT_PATH = "";
+    assert.doesNotThrow(() => resolveVaultPath(undefined), "an empty variable still falls through to the default chain");
+  } finally {
+    if (saved === undefined) delete process.env.OMP_VAULT_PATH; else process.env.OMP_VAULT_PATH = saved;
+  }
 });

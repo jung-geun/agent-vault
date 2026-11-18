@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  charGrams, cosine, normalizeText, normalizeVector, packVector, rankByCharSimilarity, topK, unpackVector,
+  SUBSTRING_MAX_GRAMS, charGrams, cosine, normalizeText, normalizeVector, packVector, rankByCharSimilarity, topK, unpackVector,
 } from "../lib/similarity.mjs";
 
 const approx = (actual, expected, epsilon = 1e-7) => assert.ok(Math.abs(actual - expected) < epsilon, `${actual} ≉ ${expected}`);
@@ -160,4 +160,46 @@ test("remembered gram counts never change a result when the memo evicts or a mem
   assert.equal(rankByCharSimilarity(rows, "needle", { limit: 3 })[0].row.title, "doc 0");
   assert.notEqual(before[0], "doc 0");
   assert.deepEqual(rankByCharSimilarity(rows, "needle", { limit: 3 }), referenceRank(rows, "needle", { limit: 3 }));
+});
+
+test("both scoring paths match the gram-set reference on each side of SUBSTRING_MAX_GRAMS, with ties and long diverse queries", () => {
+  let seed = 99;
+  const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+  const letters = "abcdefghijklmnopqrstuvwxyz배포절차漢💡é";
+  const symbols = [...letters];
+  const vocabulary = Array.from({ length: 300 }, () => Array.from({ length: 2 + Math.floor(random() * 7) }, () => symbols[Math.floor(random() * symbols.length)]).join(""));
+  const phrase = (words) => Array.from({ length: words }, () => vocabulary[Math.floor(random() * vocabulary.length)]).join(" ");
+  const rows = Array.from({ length: 60 }, (_, i) => row(`doc ${i}`, phrase(20 + Math.floor(random() * 80))));
+  // Queries copied from some rows, so partial and complete matches, ties and Dice tie-breaks all occur.
+  const queryFor = (words) => phrase(words) + " " + rows[Math.floor(random() * rows.length)].content.split(" ").slice(0, words).join(" ");
+  const sizes = new Set();
+  let below = 0;
+  let above = 0;
+  for (const words of [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30, 45, 60, 90, 120]) {
+    const query = queryFor(words);
+    const size = charGrams(query).size;
+    sizes.add(size);
+    if (size <= SUBSTRING_MAX_GRAMS) below++; else above++;
+    for (const options of [{}, { limit: 1 }, { limit: 10, minScore: 0 }]) {
+      assert.deepEqual(rankByCharSimilarity(rows, query, options), referenceRank(rows, query, options), JSON.stringify({ words, size, options }));
+    }
+  }
+  assert.ok(below >= 5 && above >= 5, `both paths must be exercised (${below} short, ${above} long)`);
+  assert.ok(Math.min(...sizes) < SUBSTRING_MAX_GRAMS && Math.max(...sizes) > 2 * SUBSTRING_MAX_GRAMS);
+  // A 4 000-character query (the recall maximum) over long texts is the case the set path exists for.
+  const long = Array.from({ length: 12 }, (_, i) => row(`long ${i}`, phrase(900)));
+  const huge = phrase(600).slice(0, 4000);
+  assert.ok(charGrams(huge).size > 1000);
+  assert.deepEqual(rankByCharSimilarity(long, huge, { limit: 5 }), referenceRank(long, huge, { limit: 5 }));
+  // Every row contains the whole long query, so all tie at score 1 and only the Dice tie-break (each row's distinct-gram count) orders
+  // them: the row with the least extra text must come first, on the set path as on the substring path.
+  const tieSizes = [];
+  for (const query of [phrase(4), phrase(150)]) {
+    tieSizes.push(charGrams(query).size);
+    const tied = [900, 5, 300, 40, 120, 0].map((extra, i) => row(`tied ${i} extra ${extra}`, `${query} ${phrase(extra)}`));
+    const ranked = rankByCharSimilarity(tied, query, { limit: 6 });
+    assert.deepEqual(ranked, referenceRank(tied, query, { limit: 6 }));
+    assert.equal(ranked[0].row.title, "tied 5 extra 0", `query with ${tieSizes.at(-1)} grams`);
+  }
+  assert.ok(tieSizes[0] <= SUBSTRING_MAX_GRAMS && tieSizes[1] > SUBSTRING_MAX_GRAMS, `tie cases must use both paths: ${tieSizes}`);
 });

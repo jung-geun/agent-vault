@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   activeMemoryTasks, activityOf, closeMemoryDbs, dbTransaction, deferredReviews, embeddingCoverage,
   finishMemoryTask, getEmbeddings, getMemory, getReviewAction, insertMemory,
@@ -416,6 +417,31 @@ function scrub(error, dsn) {
   return sanitized;
 }
 
+async function idleReconnect(vault, db) {
+  const idQuery = db.driver === "postgres" ? "SELECT pg_backend_pid() AS id" : "SELECT CONNECTION_ID() AS id";
+  const { id } = db.prepare(idQuery).get();
+  const disconnect = `
+    import assert from "node:assert/strict";
+    import { closeMemoryDbs, openVaultMemoryDb } from ${JSON.stringify(storageModule)};
+    const [vault, sessionId] = process.argv.slice(1);
+    const id = Number(sessionId);
+    assert.ok(Number.isSafeInteger(id) && id > 0);
+    const db = await openVaultMemoryDb(vault);
+    try {
+      if (db.driver === "postgres") assert.equal(db.prepare("SELECT pg_terminate_backend(?) AS terminated").get(id).terminated, true);
+      else db.exec("KILL CONNECTION " + id);
+    } finally { closeMemoryDbs(); }
+  `;
+  await exec(process.execPath, ["--input-type=module", "-e", disconnect, vault, String(id)], { cwd: vault, timeout: 10_000 });
+  const deadline = Date.now() + 2000;
+  while (!db.closed && Date.now() < deadline) await delay(10);
+  // No failed database request should be needed to evict the idle session.
+  assert.equal(db.closed, true);
+  const reopened = await openVaultMemoryDb(vault);
+  assert.notEqual(reopened.prepare(idQuery).get().id, id);
+  return reopened;
+}
+
 for (const [driver, urlEnv, teamUrlEnv] of [
   ["sqlite"], ["postgres", "AGENT_VAULT_TEST_PG_URL", "AGENT_VAULT_TEST_TEAM_PG_URL"], ["mysql", "AGENT_VAULT_TEST_MYSQL_URL", "AGENT_VAULT_TEST_TEAM_MYSQL_URL"],
 ]) {
@@ -444,6 +470,8 @@ for (const [driver, urlEnv, teamUrlEnv] of [
           assert.ok(reviewId > source.queued.review.id);
           assert.ok(persona.patternId > source.persona.patternId);
           await teamContract(vault, driver, urlEnv, teamUrlEnv);
+          const reconnected = await idleReconnect(vault, db);
+          assertVector(reconnected, memory);
         }
         await closeMemoryDbs();
         const reopened = await openVaultMemoryDb(vault, { existing: true });

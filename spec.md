@@ -79,6 +79,8 @@ Counts and age only schedule a review; they never prove that knowledge is true.
 - Defaults (`settings.review`): thresholds `[5, 10, 20]`, then every `20` operations; short-term memory is stale after `14` days; a memory is a skill candidate after `10` reads. All are configurable with `vault-cli config`.
 - Crossing a milestone creates a **pending** ticket. A stale short-term note also creates a ticket (`stale-short-term`) when it has not already been reviewed or deferred at its current hash.
 - `memory_reconsider` creates a ticket from a correction at any count. The feedback is stored separately and the original memory is not replaced.
+- `memory_review`, `vault_context` (once per scope it loads), and the sleep pass all evaluate review state first. That evaluation can enqueue a pending `stale-short-term` ticket, **even while tasks are active**. The task barrier below blocks consolidation, release and application, not this bookkeeping.
+- `long_memory_search`, `long_memory_read`, and `memory_query` (knowledge rows only) also increment each returned memory's `read_count` and set `last_read_at`. `read_count` feeds skill-candidate detection. The `vault_context` preload does not increment it.
 
 ### 5.2 Ticket states
 
@@ -91,9 +93,11 @@ Counts and age only schedule a review; they never prove that knowledge is true.
 
 ### 5.3 The sleep pass (`memory_sleep` or end of a completed task)
 
-- If any task is active, returns `deferred: true` and changes nothing.
+- The review state is evaluated first, before any idle check. This can enqueue a stale-short-term ticket even when the pass is then deferred.
+- If any task is active, returns `deferred: true`. It performs no duplicate archiving, ticket release, or action application. Bookkeeping already described above may still have occurred.
 - If nothing is pending or staged, returns `skipped` with reason `not_due`.
 - Otherwise: archive exact duplicate memories, release pending tickets to ready, and apply staged review actions. Applying an action fails with `maintenance_deferred` if tasks became active again; the action stays staged.
+- `memory_sleep` additionally runs weekly-view and persona maintenance, which defer on their own when any task is active. The task-end path runs the per-namespace pass without them and then runs them once.
 - No model runs and no stored instruction is executed. The pass is deterministic.
 
 ### 5.4 What the agent does with a ready ticket
@@ -110,7 +114,18 @@ At the start of a task, inspect `reviewWork`, read source evidence, then stage a
 
 Each tool validates its arguments against a JSON schema. A successful call is also recorded for usage counting and, for a fixed set of tools, appended to the vault access log (disable with `AGENT_VAULT_DISABLE_ACCESS_LOG=1`). Results larger than the response budget return `result_too_large`; reduce `limit`/`maxChars` or read with `offset`.
 
-Timing column: **Now** takes effect immediately; **Boundary** takes effect only at a safe task boundary; **Read** does not change stored data.
+### 6.0 State-change vocabulary
+
+Timing column: **Now** changes stored content or registration immediately; **Boundary** applies its effect only at a safe task boundary (staging may happen earlier); **Read** returns data without changing knowledge or document content and without applying maintenance.
+
+**Read does not mean side-effect free.** Any successful call to a counted tool (section 5.1) updates usage counters and may create a pending review ticket. In addition:
+
+- `vault_context` may auto-register the project, may enqueue a stale-short-term ticket, and may claim the once-per-task review delivery.
+- `long_memory_search`, `long_memory_read`, `memory_query` update `read_count` and `last_read_at` on returned knowledge.
+- A fixed set of tools append an event to the vault access log.
+- Failure of usage accounting does not fail the call; the result carries `memoryAccountingWarning`.
+
+None of these rewrite or replace knowledge content, release tickets, or apply review decisions.
 
 ### 6.1 Context and lifecycle
 
@@ -199,14 +214,14 @@ Other hosts have no guard installed. The rule "memory is tool-only" is then enfo
 | Hooks unavailable | Memory tools still work. No automatic records, `not_connected` lifecycle, manual `memory_sleep` while idle. |
 | Recorder write fails | UI warning, record skipped, work continues. |
 | Task never closes (crash) | Next `memory_task_start` cancels tasks whose owner process no longer exists. |
-| Maintenance called during an active task | `deferred`; no memory mutation. |
+| Maintenance called during an active task | `deferred`; no consolidation, ticket release, review application, weekly export or persona change. Review evaluation and usage bookkeeping can still record a pending ticket. |
 | Weekly Markdown modified by hand | Preserved and reported as a conflict; SQLite remains authoritative. |
 | Usage accounting fails after a write | The write stays successful and the result carries `memoryAccountingWarning`. |
 | Credential-shaped content in a write | Refused. Remove the secret and retry. |
 
 ## 10. Guarantees and Limits
 
-- Memory is changed only by explicit tool calls or by the idle-boundary maintenance described above. Reading or loading context never rewrites knowledge.
+- Knowledge content changes only through explicit write tools or through the idle-boundary maintenance described above. Reading or loading context never rewrites or replaces knowledge, but it does update usage counters, read statistics, pending review tickets and, when a call carries a working directory, project registration (section 6.0).
 - Review counts and age schedule work; they are not evidence. Replacement of a factual memory requires a non-user-report source and a structured assessment.
 - Evidence metadata supplied by an agent is not automatic source verification.
 - The guard, the persona, and the recorder are not security boundaries.

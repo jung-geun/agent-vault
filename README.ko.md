@@ -26,11 +26,11 @@ npx skills add jung-geun/agent-vault -g
 - **메모리 분리:** 전역·프로젝트·역할별 범위를 나누고 단기 작업 상태와 장기 지식을 구분합니다.
 - **근거 기반 개선:** 사용자의 정정을 재검토 신호로 삼고, 기존 지식과 새 증거를 비교합니다. 근거가 부족하면 갱신을 보류합니다.
 - **태스크 경계에서 정리:** 사용 횟수와 노후화는 검토를 예약할 뿐입니다. 진행 중인 태스크를 끊지 않고 정상 종료·유휴 상태에서 검토된 변경을 적용합니다.
-- **로컬 저장:** 문서와 단기 메모리는 Markdown, 장기 메모리와 검수 이력은 SQLite에 저장합니다. Obsidian으로 Markdown 문서를 볼 수도 있습니다.
-- **주간 기록:** 지식·로그·인수인계를 `YYYY-WW.md` 하나에 날짜·요일별로 묶습니다. 진행 중인 태스크는 월요일이 지나도 시작한 업무 주차에 남고, SQLite에서는 날짜·키워드로 조회합니다.
+- **선택형 저장소:** 문서와 단기 메모리는 Markdown 파일로 유지합니다. 장기 메모리와 검토 이력은 기본적으로 별도 패키지 없는 SQLite에 저장하며, PostgreSQL 또는 MySQL/MariaDB를 명시적으로 선택할 수 있습니다.
+- **주간 기록:** 지식·로그·인수인계를 `YYYY-WW.md` 하나에 날짜·요일별로 묶습니다. 진행 중인 태스크는 월요일이 지나도 시작한 업무 주차에 남습니다. 설정한 데이터베이스에서 날짜·키워드로 조회할 수 있습니다.
 - **사용자 persona:** 질문·코딩·업무 지시·업무 시간 패턴을 근거와 함께 관리해 응답과 질문 방식을 조절합니다. 현재 요청이 항상 우선하며 관찰을 사실이나 권한으로 취급하지 않습니다.
 - **선택적 팀 공유:** 명시적으로 설정한 팀 저장소만 사용하며 개인 메모리를 자동으로 공유하지 않습니다.
-- **순위 기반 회상과 상태 점검:** `agent-vault recall`은 네트워크 없이 로컬에서 키워드로 작업 설명에 맞는 메모리를 순위로 찾아 줍니다. 선택 기능인 자동 회상은 Claude Code와 Codex 프롬프트에 배경 맥락으로만 덧붙이며 지시로 취급하지 않습니다. `agent-vault status`는 개수, 검토 대기열, 문제별 해결 방법을 알려 줍니다.
+- **순위 기반 회상과 상태 점검:** `agent-vault recall`은 외부 검색 서비스 없이 키워드로 작업 설명에 맞는 메모리의 순위를 매깁니다. 선택 기능인 자동 회상은 Claude Code와 Codex 프롬프트에 배경 맥락으로만 덧붙이며 지시로 취급하지 않습니다. `agent-vault status`는 개수, 검토 대기열, 문제별 해결 방법을 알려 줍니다.
 - **정규식·유사도·로컬 임베딩 검색:** 검색은 `regex`와 `similar` 모드를 지원하고 상위 5개(최대 10개)를 돌려줍니다. `similar`는 내 컴퓨터에서 실행되는 작은 임베딩 모델(Ollama 또는 LM Studio, 루프백 전용)이 있으면 이를 사용하고, 없으면 문자 유사도로 동작하므로 모델 없이도 쓸 수 있습니다. `similar`로 검색할 때만 임베딩합니다. 한국어 등 영어가 아닌 메모에는 영어 전용 모델 대신 다국어 모델(예: `granite-embedding:278m`)을 쓰세요.
 
 ## 사용 방법
@@ -54,9 +54,39 @@ npx skills add jung-geun/agent-vault -g
 
 최초 연결에 권한 승인이나 에이전트 재시작이 필요한 환경은 한 번 안내합니다. MCP나 hooks를 자동 등록할 수 없는 환경에서는 필요한 단계와 제한을 설명하며, 연결되지 않은 상태를 완료로 표시하지 않습니다.
 
+### 선택 사항: SQL 저장소
+
+SQLite에는 별도 npm 패키지나 설정이 필요 없습니다. SQL을 사용하려면 저장소 하나에 전용 빈 데이터베이스를 준비하세요. PostgreSQL 14 이상(UTF-8), MySQL 8.0.17 이상 또는 MariaDB 10.6 이상을 지원합니다. 데이터베이스 계정에는 읽기·쓰기와 테이블·인덱스·트리거·루틴 생성 권한이 필요합니다. 선택한 드라이버만 설치된 `bin/`과 `lib/`가 있는 디렉터리에 설치하세요.
+
+```sh
+npm install --prefix /absolute/path/to/agent-vault --no-save --no-package-lock pg@8
+# MySQL 또는 MariaDB를 사용할 때:
+npm install --prefix /absolute/path/to/agent-vault --no-save --no-package-lock mysql2@3
+```
+
+`AGENT_VAULT_DB_DRIVER`를 `postgres`, `mysql`, `mariadb` 중 하나로 지정하세요. 연결 URL은 `AGENT_VAULT_DB_URL` 또는 `AGENT_VAULT_DB_URL_FILE`로 전달합니다. 대신 드라이버와 환경 변수 이름 또는 자격 증명 파일 경로만 설정에 저장할 수도 있습니다.
+
+```sh
+vault-cli config --db-driver postgres --db-url-file /absolute/private/path/vault-dsn
+```
+
+자격 증명 파일은 소유자만 접근할 수 있어야 하며 연결 URL 한 개만 포함해야 합니다. URL 자체를 명령 인자나 저장소 설정에 입력하지 마세요. CLI, MCP 서버, 모든 태스크 hooks에 동일한 설정을 사용하세요. 로컬 외 네트워크에서는 서버를 검증하는 TLS를 사용하세요. PostgreSQL은 `sslmode=verify-full`, MySQL/MariaDB는 `ssl=true`를 지정합니다. 자세한 내용은 [저장소 사양](spec.md#1b-storage-configuration-and-cutover)을 참고하세요.
+
+기존 SQLite 데이터베이스를 옮기려면 쓰기를 수행하는 프로세스를 모두 중지한 뒤 SQLite 파일이 있는 호스트에서 실행하세요.
+
+```sh
+vault-cli memory migrate-db --path /absolute/path/to/vault --dry-run
+vault-cli memory migrate-db --path /absolute/path/to/vault
+vault-cli memory diagnose --path /absolute/path/to/vault
+```
+
+첫 명령은 대상에 연결하지 않고 테이블별 개수를 표시합니다. 복사하려면 빈 SQL 저장소가 필요합니다. SQLite 원본과 Markdown 파일은 수정하지 않습니다. 원본을 백업으로 보존하고 SQL 설정으로 클라이언트를 다시 시작하세요.
+
+팀 SQL은 별도로 활성화하며 전용 데이터베이스를 사용합니다. `vault-cli config --team-db-driver postgres|mysql|mariadb --team-id <id>`로 설정하세요. 기존 팀 파일은 `memory migrate-db --team --from-sqlite <path>`로 복사합니다.
+
 ### 메모리는 태스크 경계에서 갱신합니다
 
-업무 주차는 월~일 기준이며, 진행 중인 태스크는 주가 바뀌어도 원래 주차를 유지합니다. Markdown은 설정한 **1~6개월**만 보관하고 SQLite 기록은 계속 조회할 수 있습니다.
+업무 주차는 월~일 기준이며, 진행 중인 태스크는 주가 바뀌어도 원래 주차를 유지합니다. Markdown은 설정한 **1~6개월**만 보관하며 데이터베이스 기록은 계속 조회할 수 있습니다.
 
 persona와 검토된 메모리 변경은 정상 태스크 종료 후 유휴 시점에 반영합니다. hooks가 없는 환경에서는 작업을 마친 뒤 `agent-vault maintain`을 요청할 수 있습니다. 기존 일자별 파일은 `agent-vault migrate`로 가져오며, 원본 삭제는 별도의 명시적 요청이 있어야 합니다.
 

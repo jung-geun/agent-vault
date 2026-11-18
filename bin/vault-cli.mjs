@@ -20,11 +20,13 @@ Usage:
   vault-cli config [--mode manual|auto] [--harness <name>] [--path <path>]
   vault-cli config --team-url <url> --team-id <id> [--token-env <name>] [--read-only]
   vault-cli config --team-file <absolute-local.sqlite> --team-id <id> [--read-only]
+  vault-cli config --team-db-driver postgres|mysql|mariadb --team-id <id> [--team-db-url-env <name> | --team-db-url-file <absolute-path>] [--read-only]
   vault-cli config --team-off | --review-thresholds 5,10,20 | --stale-days <days>
   vault-cli config --markdown-months 1..6 [--timezone Asia/Seoul] [--workday-start 09:00]
   vault-cli config --persona on|off [--persona-min-observations 3]
   vault-cli config --recall on|off [--recall-limit 5] [--recall-max-chars 2000]
   vault-cli config --embedding auto|off|http [--embedding-endpoint <loopback-url>] [--embedding-model <name>]
+  vault-cli config --db-driver sqlite|postgres|mysql|mariadb [--db-url-env <name> | --db-url-file <absolute-path>]
   vault-cli memory recall --query <text> [--project <id> | --scope global] [--role <role>] [--limit 5]
   vault-cli memory embed [--project <id> | --scope global] [--limit 500] [--path <path>]
   vault-cli memory stats [--project <id>] [--path <path>]
@@ -34,6 +36,7 @@ Usage:
   vault-cli persona [--project <id> | --scope global] [--path <path>]
   vault-cli memory maintain [--project <id> | --scope global] [--role <role>] [--path <path>]
   vault-cli memory migrate --project <id> [--prune-legacy] [--path <path>]
+  vault-cli memory migrate-db [--from-sqlite <path>] [--team] [--dry-run] [--path <path>]
   vault-cli init [--path <path>]
   vault-cli scaffold --project <id> [--title <title>] [--path <path>]
   vault-cli status [--project <id>] [--path <path>]
@@ -91,7 +94,8 @@ function commandFlags(start, valueFlags, booleanFlags = []) {
       if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value.`);
       values[flag] = value;
     } else {
-      throw new Error(`Unknown option: ${flag}`);
+      // Do not echo arbitrary arguments: a DSN must come from the environment or a file.
+      throw new Error(/^--[a-z][a-z0-9-]*$/.test(flag) ? `Unknown option: ${flag}` : "Unknown option or unexpected positional argument.");
     }
   }
   return values;
@@ -229,16 +233,18 @@ try {
     }
 
     case "config": {
-      const flags = commandFlags(1, ["--mode", "--harness", "--path", "--team-url", "--team-file", "--team-id", "--token-env", "--review-thresholds", "--stale-days", "--markdown-months", "--timezone", "--workday-start", "--persona", "--persona-min-observations", "--recall", "--recall-limit", "--recall-max-chars", "--embedding", "--embedding-endpoint", "--embedding-model"], ["--read-only", "--team-off"]);
+      const flags = commandFlags(1, ["--mode", "--harness", "--path", "--team-url", "--team-file", "--team-id", "--token-env", "--review-thresholds", "--stale-days", "--markdown-months", "--timezone", "--workday-start", "--persona", "--persona-min-observations", "--recall", "--recall-limit", "--recall-max-chars", "--embedding", "--embedding-endpoint", "--embedding-model", "--db-driver", "--db-url-env", "--db-url-file", "--team-db-driver", "--team-db-url-env", "--team-db-url-file"], ["--read-only", "--team-off"]);
       const settings = await configureSettings(targetVaultPath, {
         mode: flags["--mode"], harness: flags["--harness"],
         teamUrl: flags["--team-url"], teamFile: flags["--team-file"], teamId: flags["--team-id"],
+        teamDbDriver: flags["--team-db-driver"], teamDbUrlEnv: flags["--team-db-url-env"], teamDbUrlFile: flags["--team-db-url-file"],
         tokenEnv: flags["--token-env"], readOnly: flags["--read-only"], teamOff: flags["--team-off"],
         reviewThresholds: flags["--review-thresholds"], staleDays: flags["--stale-days"],
         markdownMonths: flags["--markdown-months"], timeZone: flags["--timezone"], workdayStart: flags["--workday-start"],
         persona: flags["--persona"], personaMinObservations: flags["--persona-min-observations"],
         recall: flags["--recall"], recallLimit: flags["--recall-limit"], recallMaxChars: flags["--recall-max-chars"],
         embedding: flags["--embedding"], embeddingEndpoint: flags["--embedding-endpoint"], embeddingModel: flags["--embedding-model"],
+        dbDriver: flags["--db-driver"], dbUrlEnv: flags["--db-url-env"], dbUrlFile: flags["--db-url-file"],
       });
       if (flags["--team-file"]) console.error("[WARN] Team SQLite requires one host and a local filesystem; never use NFS or sync folders.");
       console.log(JSON.stringify(settings, null, 2));
@@ -247,7 +253,15 @@ try {
 
     case "memory": {
       const action = args[1];
-      if (!["maintain", "migrate", "history", "recall", "embed", "stats", "diagnose"].includes(action)) throw new Error("memory requires maintain, migrate, history, recall, embed, stats or diagnose.");
+      if (action === "migrate-db") {
+        const flags = commandFlags(2, ["--path", "--from-sqlite"], ["--dry-run", "--team"]);
+        const { migrateSqliteMemory } = await import("../lib/memory-db-migration.mjs");
+        const source = flags["--from-sqlite"]?.replace(/^~(?=$|\/|\\)/, os.homedir());
+        const report = await migrateSqliteMemory(targetVaultPath, { source, dryRun: flags["--dry-run"], team: flags["--team"] });
+        console.log(JSON.stringify(report, null, 2));
+        break;
+      }
+      if (!["maintain", "migrate", "history", "recall", "embed", "stats", "diagnose"].includes(action)) throw new Error("memory requires maintain, migrate, migrate-db, history, recall, embed, stats or diagnose.");
       const values = ["--project", "--path"];
       if (["maintain", "history", "recall"].includes(action)) values.push("--scope", "--role");
       if (action === "history") values.push("--from", "--to", "--week", "--kind", "--offset");
@@ -347,6 +361,7 @@ try {
       console.log(`Vault Path: ${res.vaultPath}`);
       console.log(`Obsidian Ready: ${res.isObsidianVault ? "YES (.obsidian/ present)" : "NO"}`);
       console.log(`Total Projects: ${res.projectsCount}`);
+      if (res.memoryDatabaseError) console.warn(`[WARN] Memory database: ${res.memoryDatabaseError.message}`);
       if (res.projects.length > 0) {
         console.log("\nRegistered Projects:");
         for (const p of res.projects) {

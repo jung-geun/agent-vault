@@ -12,11 +12,11 @@ Translations of the user guide: [English](README.md) | [한국어](README.ko.md)
 | CLI (`bin/vault-cli.mjs`) | Local Node program run by the agent | One-time administration: `setup`, `config`, `install`, `memory migrate/history/maintain`, `persona`. |
 | MCP server (`bin/vault-mcp.mjs`) | Local stdio server started by the host with Node | All runtime memory reads and writes, review handling, task lifecycle calls. |
 | Hooks | Host lifecycle callbacks | Automatically record instructions and edits, open and close task boundaries, and (OMP only) block direct vault access. |
-| Storage | SQLite plus Markdown | Durable knowledge, journals, persona evidence and review receipts live in SQLite at `<vault>/.agent-vault/memory.db`. Notes, profile, standards, short-term memory and generated weekly views are Markdown. |
+| Storage | SQLite, PostgreSQL, or MySQL/MariaDB plus Markdown | Durable knowledge, journals, persona evidence, embeddings, and reviews use the selected database. Default SQLite lives at `<vault>/.agent-vault/memory.db`. Notes, profile, standards, short-term memory, and generated weekly views remain files. |
 
 Requirements: Node.js `^22.13.0 || >=23.4.0` (`node:sqlite`).
 
-The skill is guidance, the MCP server is the only supported memory interface, and hooks are optional automation. Without MCP the agent must stop memory operations; it must not fall back to reading vault files, SQLite, or shell commands.
+The skill is guidance, MCP is the supported agent memory interface, and hooks are optional automation. Without MCP the agent must stop memory operations; it must not fall back to reading vault files or querying databases directly.
 
 ## 1a. Tool names
 
@@ -26,7 +26,7 @@ The skill is guidance, the MCP server is the only supported memory interface, an
 | Context and lifecycle | `task_start` | Register a task and pin its business week. |
 | Context and lifecycle | `task_end` | Close a task and run maintenance after successful completion if idle. |
 | Context and lifecycle | `maintain` | Run due review, weekly view, and persona maintenance when idle. |
-| Context and lifecycle | `migrate` | Import legacy memory into SQLite. |
+| Context and lifecycle | `migrate` | Import legacy Markdown memory into the selected store. |
 | Notes (Markdown documents) | `doc_search` | Search Markdown notes by keyword, regex, or character similarity. |
 | Notes (Markdown documents) | `doc_read` | Read a note and its content hash. |
 | Notes (Markdown documents) | `doc_list` | List notes in a scope. |
@@ -37,7 +37,7 @@ The skill is guidance, the MCP server is the only supported memory interface, an
 | Durable knowledge | `long_read` | Read a durable knowledge entry by ID. |
 | Durable knowledge | `long_search` | Search active durable knowledge in one namespace by keyword, regex, or similarity. |
 | Durable knowledge | `recall` | Rank relevant knowledge for a natural-language task description. |
-| History and inspection | `history` | Query SQLite knowledge and journals by date, week, keyword, regex, similarity, or kind. |
+| History and inspection | `history` | Query durable knowledge and journals by date, week, keyword, regex, similarity, or kind. |
 | History and inspection | `stats` | Inspect memory counts, review queues, active tasks, and effective settings. |
 | History and inspection | `diagnose` | Check vault and runtime health and report fixes without applying them. |
 | Roles and handoffs | `role_read` | Find durable entries for one role or list role counts. |
@@ -58,6 +58,18 @@ The skill is guidance, the MCP server is the only supported memory interface, an
 
 Hosts show these tools as `mcp__agent-vault__<name>` or with a similar host-specific prefix.
 These names replaced the earlier `memory_*`/`*_memory_*` names in this release with no aliases, so update saved allow-lists and approval settings that name the old tools.
+
+## 1b. Storage Configuration and Cutover
+
+- **Selection.** The CLI, MCP server, and hooks use the same vault settings. `database.driver` accepts `sqlite` (default), `postgres`, `mysql`, or `mariadb`; `AGENT_VAULT_DB_DRIVER` overrides it. Only a selected SQL driver loads its optional package (`pg@8` or `mysql2@3`). Install the package in the runtime bundle identified by the installed CLI/MCP path. SQLite needs no npm dependency.
+- **Credentials.** For SQL, `AGENT_VAULT_DB_URL` or `AGENT_VAULT_DB_URL_FILE` overrides the settings reference. Set only one. Otherwise set `database.urlEnv` or `database.urlFile`; if both are unset, use `AGENT_VAULT_DB_URL`. A DSN file must be a regular, unlinked, owner-only file at an absolute path. Use `postgresql://` or `postgres://` for PostgreSQL, and `mysql://` or `mariadb://` for MySQL/MariaDB. The URL must name a host, user, and database. Percent-encode special characters in credentials. The URL and driver diagnostics cannot appear in Agent Vault reports; settings store references, not credentials. No connection or authentication failure causes a fallback to SQLite.
+- **Deployment.** Use a dedicated database, UTF-8 for PostgreSQL 14+, or normal 16 KiB InnoDB pages for MySQL 8.0.17+ and MariaDB 10.6+. Agent Vault uses PostgreSQL's `public` schema; the connection user must be able to create and update its tables, indexes, functions, and triggers. MySQL-family servers require corresponding DDL, DML, and `TRIGGER` privileges. MySQL installations with binary logging may need a DBA to set `log_bin_trust_function_creators` before a non-privileged user can install triggers. Use verified TLS on non-local networks: PostgreSQL `sslmode=verify-full` (optional `sslrootcert`, `sslcert`, `sslkey`), MySQL/MariaDB `ssl=true` with trusted CA and hostname checking. SQL stores memory bodies as text; protect access, storage, and backups accordingly.
+- **Team SQL.** Configure `vault-cli config --team-db-driver postgres|mysql|mariadb --team-id <id>` and optionally `--team-db-url-env` or `--team-db-url-file`. The equivalent environment override prefix is `AGENT_VAULT_TEAM_DB_`. Team SQL requires a distinct database; the schema records whether it is a private or team store and refuses the other use. `--read-only` gates Agent Vault's team writes; use database privileges for an actual trust boundary. `teamId` is a logical scope, not a security boundary for users with direct DB access. Existing `--team-file` (same-host SQLite) and `--team-url` integrations do not change.
+- **Schema and atomicity.** SQLite keeps its existing WAL, schema version 6, and `BEGIN IMMEDIATE` behavior. SQL has its own schema version (`sql_schema`), currently 1, with equivalent logical schema 6. Initialization is serialized and rejects unknown formats; MySQL-family DDL is restartable after partial initialization. App transactions use one session with nested savepoints. A database-wide PostgreSQL transaction advisory lock or MySQL-family session lock serializes writers and the idle-maintenance barrier. A task PID is interpreted only on its owning host; another host cannot automatically reap it. Explicit task IDs still work across hosts. SQL does not synchronize Markdown between clients.
+- **Queries.** Text, timestamps and JSON payloads retain their SQLite logical representation, and vectors use native binary columns. No backend uses a full-text index. SQLite executes the deterministic keyword scorer in SQL; SQL backends scan scoped candidates in bounded pages, apply the same scorer, and hydrate only the requested page. Scores and descending-ID ties are applied before pagination or excerpts. SQL diagnostics check connection and schema access, not physical database integrity.
+- **Native limits.** PostgreSQL text cannot contain a NUL character. MySQL-family indexed identifiers have bounded lengths. A value the selected engine cannot represent fails the write or import; SQL never silently truncates it.
+- **Copy from SQLite.** Finish active tasks, pause writers, back up the original, and run on the source host. `vault-cli memory migrate-db --dry-run [--from-sqlite <path>]` reads only the source and reports counts by logical table. Without `--dry-run`, it snapshots the source and upgrades only that snapshot if needed, then copies to the selected, empty SQL store. It preserves logical IDs, identity high-water marks, references, vectors, reviews, task attribution, persona records, and export manifests. The logical data import commits only after destination counts match. MySQL-family schema and identity DDL can remain on failure, but no partial rows are committed. For a team file add `--team --from-sqlite <explicit-team-file>`; personal records cause refusal. The original SQLite and Markdown files are not changed. Validate with `memory diagnose` and a representative `history` or `recall` before resuming clients. Do not switch back to SQLite after new SQL writes without a separate data recovery plan.
+- **Contract tests.** `node --test test/sql-storage.test.mjs` always tests SQLite. Set `AGENT_VAULT_TEST_MYSQL_URL` and/or `AGENT_VAULT_TEST_PG_URL` for real SQL coverage. Optional team SQL tests use `AGENT_VAULT_TEST_TEAM_MYSQL_URL` or `AGENT_VAULT_TEST_TEAM_PG_URL`. All supplied databases must be empty and disposable; tests record data and do not truncate existing databases.
 
 ## 2. Hook Support by Host
 
@@ -213,7 +225,7 @@ None of these rewrite or replace knowledge content, release tickets, or apply re
 | `doc_search`, `doc_list`, `doc_read` | Search (keyword, regex, or character similarity), list, and read Markdown notes with hashes. | Read |
 | `doc_write` | Create, append, or replace a note under `projects/`, `shared/knowledge/`, or `user/` (`user/` is append-only). Replace requires `expectedHash`. | Now |
 | `short_read` / `short_write` | Read or replace Markdown working state (project or global, optional role) with hash, last-written time and staleness. | Now |
-| `remember` | Store an immutable durable SQLite memory (project, global, optional role, or explicitly configured team). Returns `memory:id`. | Now |
+| `remember` | Store an immutable durable memory (project, global, optional role, or explicitly configured team). Returns `memory:id`. | Now |
 | `long_search` / `long_read` | Search active memories in one exact namespace by keyword, regex, or similarity (section 11.3), or read by id including archived and superseded sources. Results carry `knowledgeReview` warnings for unresolved corrections. | Read |
 | `role_read` / `role_write` | Per-role durable entries. | Read / Now |
 | `recall` | Rank project and global knowledge for a natural-language task description (section 11); optional `regex` and `similar` modes (section 11.3). Counted as a read. | Read |
@@ -226,9 +238,9 @@ None of these rewrite or replace knowledge content, release tickets, or apply re
 | `worktree_list` | List worktrees with record counts and latest `memory:id`. | Read |
 | `log_write` | Immutable QA, work, review, or incident log. Use only after a check actually ran. | Now |
 | `handoff` | Immutable handoff between roles. | Now |
-| `history` | Query SQLite knowledge and journals by inclusive date range, pinned week, keyword, regex or similarity (section 11.3) and kind. Works after weekly Markdown has been pruned. No arbitrary SQL. | Read |
+| `history` | Query durable knowledge and journals by inclusive date range, pinned week, keyword, regex or similarity (section 11.3) and kind. Works after weekly Markdown has been pruned. No arbitrary SQL. | Read |
 
-Weekly Markdown (`projects/<id>/weekly/YYYY-WW.md`, `shared/knowledge/weekly/`) is a generated view of SQLite, written during maintenance, retained for 1 to 6 months (default 3). Only generated files that were not modified are deleted; modified files are preserved and reported as conflicts; SQLite rows are never deleted by retention.
+Weekly Markdown (`projects/<id>/weekly/YYYY-WW.md`, `shared/knowledge/weekly/`) is a generated database view, written during maintenance and retained for 1 to 6 months (default 3). Only generated files that were not modified are deleted. Modified files are reported as conflicts. Retention never deletes database rows.
 
 ### 6.3a Inspection
 
@@ -266,7 +278,7 @@ An observation becomes `tentative` only after at least `minObservations` indepen
 | `project_resolve` | Resolve which registered project a directory belongs to: `resolved`, `ambiguous`, `unregistered`, or `not_found`. Never guesses. | Read |
 | `project_list` | List projects with registration state. | Read |
 | `project_create` | Create a project workspace and register its source directory. Only for a stable repository; idempotent. | Now |
-| `migrate` | Import exact legacy daily notes and role memory into SQLite. Originals stay unless `pruneLegacy` is true, and then only verified dated sources are removed while idle. Changed sources remain conflicts. | Now (prune only when idle) |
+| `migrate` | Import exact legacy daily notes and role memory into the selected database. Originals stay unless `pruneLegacy` is true, and then only verified dated sources are removed while idle. Changed sources remain conflicts. | Now (prune only when idle) |
 
 ## 7. Join Modes and Registration
 
@@ -290,12 +302,12 @@ Other hosts have no guard installed. The rule "memory is tool-only" is then enfo
 
 | Situation | Behavior |
 | --- | --- |
-| MCP server unavailable | Agent reports it and stops memory operations. No direct file, SQLite, or shell fallback. |
+| MCP server unavailable | Agent reports it and stops memory operations. No direct file, database, or shell fallback. |
 | Hooks unavailable | Memory tools still work. No automatic records, `not_connected` lifecycle, manual `maintain` while idle. |
 | Recorder write fails | UI warning, record skipped, work continues. |
-| Task never closes (crash) | Next `task_start` cancels tasks whose owner process no longer exists. |
+| Task never closes (crash) | The next `task_start` on the owner's host cancels tasks whose process no longer exists. |
 | Maintenance called during an active task | `deferred`; no consolidation, ticket release, review application, weekly export or persona change. Review evaluation and usage bookkeeping can still record a pending ticket. |
-| Weekly Markdown modified by hand | Preserved and reported as a conflict; SQLite remains authoritative. |
+| Weekly Markdown modified by hand | Preserved and reported as a conflict; the configured database remains authoritative. |
 | Usage accounting fails after a write | The write stays successful and the result carries `memoryAccountingWarning`. |
 | Credential-shaped content in a write | Refused. Remove the secret and retry. |
 
@@ -354,10 +366,10 @@ Every non-keyword response adds `search: { mode, method, candidates, truncated, 
 - **Local only.** Endpoints must be `127.0.0.1`, `::1` or `localhost`; anything else is rejected at configuration time. Requests go to the OpenAI-compatible `POST /v1/embeddings`; redirects are refused.
 - **Detection (`auto`).** One 400 ms probe each of Ollama (`127.0.0.1:11434/api/tags`) and LM Studio (`127.0.0.1:1234/v1/models`), cached for 60 s, only when an explicit `similar` search, `memory embed`, `stats` or `diagnose` needs it. `http` never probes (except the single `diagnose` health request). Detection picks the first installed model from a fixed preference list. **Multilingual models rank first** (`multilingual-e5-small`, `granite-embedding:278m`, `embeddinggemma`, `bge-m3`, ...), then English-only tiny models (`all-minilm`, `snowflake-arctic-embed:22m`, `bge-small`, `nomic-embed-text`, ...). Set `--embedding-model` to override.
 - **Why multilingual first.** Measured once on the maintainer's machine with eight Korean-only paraphrase queries over eight Korean memories, the right memory ranked first 7 times with `granite-embedding:278m` (562 MB), once with `all-minilm` (45 MB) and twice with `chars`. On a mixed English/Korean set of 14 memories and eight queries: `all-minilm` 7, `granite-embedding:278m` 6, `chars` 4. These are small samples, not a benchmark; the only lesson is that an English-only model is not reliable for Korean. `diagnose` says so when such a model is active.
-- **Storage.** Vectors live in the `memory_embeddings` table of `memory.db` (schema 6), keyed by memory id, model and a hash of the exact embedded text. A 384-dimension float32 vector is 1 536 bytes, so 500 candidates are about 0.75 MB to compare; larger models store their own dimension. Edited text or a different model is re-embedded; unchanged text never is.
+- **Storage.** Vectors live in the selected backend's `memory_embeddings` table, keyed by memory id, model and a hash of the exact embedded text. A 384-dimension float32 vector is 1 536 bytes, so 500 candidates are about 0.75 MB to compare; larger models store their own dimension. Edited text or a different model is re-embedded; unchanged text never is.
 - **Backfill.** A `similar` search embeds at most `embedding.backfillPerCall` (default 64) missing candidates before ranking. `vault-cli memory embed [--project <id> | --scope global] [--limit n]` embeds the rest explicitly. Observed on an Apple-silicon Mac with a local Ollama: about 5–7 ms per warm query and about 120–260 ms to embed 14 memories on first use.
 - **`auto` is all-or-nothing.** Scores from different methods are never mixed. If every candidate has a vector for the active model after backfill, the whole set is ranked by embedding. Otherwise the whole set is ranked by `chars` and `search.fallback` says why, with `search.pending` counting the missing vectors. A configured or detected server that is down also falls back. `method: "embedding"` never falls back: it fails with `embedding_unavailable`.
 - **Credential-shaped text.** A memory whose text matches the secret detector is never sent to the embedder. It is embedded from its title, or from the fixed label `[withheld: credential-shaped content]` when the title also matches, so it cannot block the rest of the scope; `search.withheld` counts such memories. A query that looks like a credential is rejected for embedding (`auto` falls back to `chars`). Use `regex` or `chars` to find a withheld memory.
-- **Notes.** `doc_search` supports `regex` and `chars` only; `method: "embedding"` fails with `unsupported_mode`, because embeddings cover SQLite memories, not Markdown files. Notes are streamed, never held whole: files over 1 MB are skipped as in every search, `regex` reads them in batches of 32, clips each body to its first 20 000 characters (`search.truncated` reports clipping) and keeps only the hits, so it scans every note in a vault of up to 20 000 files; `chars` scores the newest 500 notes by modification time (first 8 000 characters each), the same cap as memories. On a 1.05 GB set of 1 200 notes of 900 KB, the previous implementation ran out of memory under a 200 MB V8 heap limit and this one completes.
+- **Notes.** `doc_search` supports `regex` and `chars` only; `method: "embedding"` fails with `unsupported_mode`, because embeddings cover durable memories, not Markdown files. Notes are streamed, never held whole: files over 1 MB are skipped as in every search, `regex` reads them in batches of 32, clips each body to its first 20 000 characters (`search.truncated` reports clipping) and keeps only the hits, so it scans every note in a vault of up to 20 000 files; `chars` scores the newest 500 notes by modification time (first 8 000 characters each), the same cap as memories. On a 1.05 GB set of 1 200 notes of 900 KB, the previous implementation ran out of memory under a 200 MB V8 heap limit and this one completes.
 
 `stats` and `diagnose` report the provider, model, and how many active knowledge entries are embedded. They never embed anything. With `http`, `stats` makes no network request and `diagnose` makes one health-only request.

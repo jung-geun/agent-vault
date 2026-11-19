@@ -31,6 +31,9 @@ Usage:
   vault-cli memory embed [--project <id> | --scope global] [--limit 500] [--path <path>]
   vault-cli memory stats [--project <id>] [--path <path>]
   vault-cli memory diagnose [--project <id>] [--path <path>]
+  vault-cli tidy [--limit 25] [--json] [--path <path>]
+  vault-cli tidy --plan|--apply [--accept spelling,plural,typo|none] [--merge old=new,...] [--drop tag,...] [--fix-links safe|all] [--expect <planId>]
+  vault-cli tidy --backups | --undo <backupId>
   vault-cli hooks install|status|uninstall --host claude|codex [--local] [--dry-run] [--path <path>]
   vault-cli memory history [--project <id> | --scope global] [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--week YYYY-WW] [--query <text>]
   vault-cli persona [--project <id> | --scope global] [--path <path>]
@@ -308,6 +311,55 @@ try {
       const options = { scope: flags["--local"] ? "local" : "global", cwd: process.cwd(), vaultPath: explicitPath ? path.resolve(explicitPath) : undefined, dryRun: flags["--dry-run"] };
       const result = await (action === "install" ? hooks.installHooks : action === "status" ? hooks.hooksStatus : hooks.uninstallHooks)(flags["--host"], options);
       console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+
+    case "tidy": {
+      const flags = commandFlags(1, ["--path", "--limit", "--accept", "--merge", "--drop", "--fix-links", "--expect", "--undo"], ["--plan", "--apply", "--json", "--backups"]);
+      const tidy = await import("../lib/vault-tidy.mjs");
+      const show = (value, text) => console.log(flags["--json"] ? JSON.stringify(value, null, 2) : text);
+      const editing = flags["--plan"] || flags["--apply"];
+      const planOnly = ["--accept", "--merge", "--drop", "--fix-links"].filter((name) => flags[name] !== undefined);
+      if (flags["--plan"] && flags["--apply"]) throw new Error("Choose --plan or --apply, not both.");
+      if (planOnly.length && !editing) throw new Error(`${planOnly.join(", ")} need --plan or --apply.`);
+      if (flags["--expect"] !== undefined && !flags["--apply"]) throw new Error("--expect only applies with --apply.");
+      if ((flags["--undo"] !== undefined || flags["--backups"]) && (editing || planOnly.length)) throw new Error("--undo and --backups cannot be combined with --plan or --apply.");
+      if (flags["--backups"]) {
+        const backups = await tidy.listTidyBackups(targetVaultPath);
+        show(backups, backups.length ? backups.map((item) => `${item.id}  ${item.files} notes${item.aliases ? " + aliases" : ""}  ${item.at ?? ""}`).join("\n") : "No tidy backups.");
+        break;
+      }
+      if (flags["--undo"] !== undefined) {
+        const result = await tidy.undoTidy(targetVaultPath, flags["--undo"]);
+        show(result, [`Restored ${result.restored.length} notes; aliases ${result.aliases}.`, ...result.skipped.map((item) => `  left alone ${item.path}: ${item.reason}`)].join("\n"));
+        break;
+      }
+      if (flags["--limit"] !== undefined && !/^(?:[1-9]\d?|100)$/.test(flags["--limit"])) throw new Error("--limit must be an integer from 1 to 100.");
+      if (!editing) {
+        const report = await tidy.auditVault(targetVaultPath, { limit: flags["--limit"] === undefined ? 25 : Number(flags["--limit"]) });
+        await tidy.recordTidyAudit(targetVaultPath, report);
+        show(report, tidy.renderTidyReport(report));
+        break;
+      }
+      const csv = (value) => (value === undefined ? [] : value.split(",").map((item) => item.trim()).filter(Boolean));
+      const options = {
+        accept: flags["--accept"] === undefined ? ["spelling"] : flags["--accept"] === "none" ? [] : csv(flags["--accept"]),
+        merge: csv(flags["--merge"]), drop: csv(flags["--drop"]), fixLinks: flags["--fix-links"] ?? "none",
+      };
+      const plan = await tidy.planTidy(targetVaultPath, options);
+      const command = tidy.tidyApplyCommand(targetVaultPath, options, plan.id);
+      if (flags["--plan"]) {
+        show({ ...plan, applyCommand: command }, tidy.renderTidyPlan(plan, plan.edits.length || Object.keys(plan.aliases).length ? command : undefined));
+        break;
+      }
+      if (flags["--expect"] !== undefined && flags["--expect"] !== plan.id) throw new Error(`The plan is now ${plan.id}, not ${flags["--expect"]}: notes or options changed. Run --plan again and review it.`);
+      if (plan.edits.length === 0 && Object.keys(plan.aliases).length === 0) { show({ changed: [] }, "Nothing to change."); break; }
+      const result = await tidy.applyTidy(targetVaultPath, plan);
+      show(result, [
+        result.id === null ? "Nothing to change." : `Changed ${result.changed.length} notes${result.aliasesRecorded ? `, recorded ${result.aliasesRecorded} tag aliases` : ""}.`,
+        ...(result.id ? [`Backup ${result.id}. Undo with: vault-cli tidy --path '${path.resolve(targetVaultPath)}' --undo ${result.id}`] : []),
+        ...result.refused.map((item) => `  refused ${item.path}: ${item.reason}`),
+      ].join("\n"));
       break;
     }
 

@@ -14,6 +14,7 @@ import { ASSESSMENT_SCHEMA, KNOWLEDGE_REVIEW_GUIDANCE, RECONSIDERATION_TRIGGERS 
 import { queryWeeklyMemory } from "../lib/weekly-memory.mjs";
 import { observePersona, readPersona, resolvePersona } from "../lib/persona.mjs";
 import { memoryStats, diagnoseMemory } from "../lib/memory-inspect.mjs";
+import { auditVault, planTidy, recordTidyAudit, tidyApplyCommand } from "../lib/vault-tidy.mjs";
 
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const SERVER_INFO = { name: "agent-vault", version: "1.2.0" };
@@ -32,6 +33,7 @@ export const INSTRUCTIONS = [
   "OMP, Claude Code and Codex task lifecycle is handled by installed hooks (vault-cli hooks install). Other harnesses must pair task_start with task_end in lifecycle hooks, not model turns. Apply refreshed context at the next task boundary. Explicit task-required memory writes remain available.",
   "Knowledge, logs, handoffs and worktree records are SQLite entries. history filters by event date, business week, kind and keyword without traversing Markdown. Weekly Markdown is a bounded-retention generated view; task weeks remain pinned across Monday and explicit parent/resume relationships.",
   "Persona stores behavioral summaries with provenance, not raw prompts or sensitive traits. Observe question style, coding style, delegation and work-hour preferences through persona_observe; repeated observations remain tentative, explicit preferences are distinct, and conflicts require review. Persona changes apply at successful idle task boundaries. Current instructions override persona; persona never grants execution or sharing permissions.",
+  "Use tidy now and then (diagnose reminds you) to audit tags and links: duplicate or overlapping tag names, tags that only repeat a note's folder, broken or fixable links and orphan notes. tidy never edits notes; show the user its findings and, only when the user agrees, give them the exact applyCommand from a plan preview to run themselves. Read-only legacy journals, user notes and SQLite memories are reported but never rewritten.",
   KNOWLEDGE_REVIEW_GUIDANCE,
 ].join(" ");
 
@@ -87,6 +89,43 @@ export const TOOLS = [
     description: "Read-only health checks with a concrete fix for each problem: Node version, settings, database integrity, project resolution, orphaned tasks, failed review actions, recall coverage, guard and team state. Never repairs anything itself.",
     inputSchema: { type: "object", properties: { project: PROJECT, cwd: CWD } },
     handler: (args, ctx) => diagnoseMemory(ctx.vault, { ...args, cwd: args.cwd ?? ctx.cwd }),
+  },
+  {
+    name: "tidy",
+    description: "Read-only audit of tags and links across the vault's Markdown notes: tag names that differ only by case or hyphenation, singular/plural pairs, probable typos, names that contain each other, tags that always appear together or only repeat the note's folder, broken, fixable and ambiguous links, orphan notes, and the tags of SQLite memories. With plan, previews a cleanup (which notes would change) and returns the exact vault-cli command the user can run to apply it. Never edits anything: applying is done by the user with vault-cli tidy --apply, which backs up every file and can be undone. Records the audit time for the diagnose reminder.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 100, description: "Items shown per list (default 25)." },
+        plan: {
+          type: "object",
+          description: "Preview a cleanup. Nothing is changed.",
+          properties: {
+            accept: { type: "array", items: { type: "string", enum: ["spelling", "plural", "typo"] }, description: "Suggestion classes to include. Default [\"spelling\"], the only class that is safe to accept wholesale." },
+            merge: { type: "array", maxItems: 50, items: { type: "string", pattern: "^[^=\\s,]+=[^=\\s,]+$" }, description: "Explicit merges as old=new, spelled exactly as the audit shows them." },
+            drop: { type: "array", maxItems: 50, items: { type: "string", maxLength: 60 }, description: "Tags to remove from editable notes." },
+            fixLinks: { type: "string", enum: ["safe", "all"], description: "safe fixes case and folder links; all also fixes moved notes." },
+          },
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const limit = args.limit ?? 25;
+      const audit = await auditVault(ctx.vault, { limit });
+      await recordTidyAudit(ctx.vault, audit);
+      if (!args.plan) return audit;
+      const options = { accept: args.plan.accept ?? ["spelling"], merge: args.plan.merge ?? [], drop: args.plan.drop ?? [], fixLinks: args.plan.fixLinks ?? "none" };
+      const plan = await planTidy(ctx.vault, options);
+      return {
+        audit,
+        plan: {
+          id: plan.id, summary: plan.summary, merges: plan.merges, drops: plan.drops, notes: plan.notes,
+          edits: plan.edits.slice(0, limit).map((edit) => ({ path: edit.path, tags: edit.tags, links: edit.links?.length })), editsTotal: plan.edits.length,
+          skipped: plan.skipped.slice(0, limit), skippedTotal: plan.skipped.length,
+          applyCommand: plan.edits.length || Object.keys(plan.aliases).length ? tidyApplyCommand(ctx.vault, options, plan.id) : null,
+        },
+      };
+    },
   },
   {
     name: "persona_observe",

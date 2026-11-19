@@ -32,6 +32,7 @@ After installing, use your agent's skill invocation feature, or ask in chat: **"
 - **Optional team sharing:** Uses only an explicitly configured team store and never shares personal memory automatically.
 - **Ranked recall and health checks:** `agent-vault recall` ranks memory for a task description by keyword without an external search service. Optional automatic recall adds it to Claude Code and Codex prompts as background context, never as instructions. `agent-vault status` reports counts, the review queue, and a concrete fix for each problem.
 - **Regex, similarity, and local-embedding search:** Searches accept `regex` and `similar` modes and return the top 5 (up to 10) results. `similar` uses a small embedding model running on your own machine (Ollama or LM Studio, loopback only) when one is available, and character similarity otherwise, so it also works with no model. Nothing is embedded unless you search with `similar`. For Korean or other non-English notes, use a multilingual model (for example `granite-embedding:278m`) instead of an English-only one.
+- **Tag and link tidy-up:** `vault-cli tidy` audits tags and links, finds duplicate spellings, plurals, probable typos and overlapping tags, and reports broken, ambiguous and orphan links. `--plan` previews a cleanup, `--apply` edits only notes that `doc_write` may replace (with backups and `--undo`), and journals, `user/` and SQLite memories are only reported. `diagnose` reminds you to run it every 30 days.
 
 ## Usage
 

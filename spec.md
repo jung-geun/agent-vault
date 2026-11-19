@@ -40,6 +40,7 @@ The skill is guidance, MCP is the supported agent memory interface, and hooks ar
 | History and inspection | `history` | Query durable knowledge and journals by date, week, keyword, regex, similarity, or kind. |
 | History and inspection | `stats` | Inspect memory counts, review queues, active tasks, and effective settings. |
 | History and inspection | `diagnose` | Check vault and runtime health and report fixes without applying them. |
+| History and inspection | `tidy` | Audit tags and links in Markdown notes and preview a cleanup; never edits. |
 | Roles and handoffs | `role_read` | Find durable entries for one role or list role counts. |
 | Roles and handoffs | `role_write` | Store a durable entry for one role. |
 | Roles and handoffs | `handoff` | Record an immutable handoff between roles. |
@@ -161,7 +162,7 @@ A task is one logical unit of agent work, registered with the vault so maintenan
 
 Counts and age only schedule a review; they never prove that knowledge is true.
 
-- Every successful call to `doc_read`, `doc_search`, `doc_list`, `doc_write`, `history`, `recall`, `short_read`, `short_write`, `long_read`, `long_search`, `remember`, `role_read`, `role_write`, `handoff`, `log_write`, `worktree_record`, `worktree_list`, and `context` counts once per touched namespace. `stats`, `diagnose`, review bookkeeping tools and automatic recall do not count.
+- Every successful call to `doc_read`, `doc_search`, `doc_list`, `doc_write`, `history`, `recall`, `short_read`, `short_write`, `long_read`, `long_search`, `remember`, `role_read`, `role_write`, `handoff`, `log_write`, `worktree_record`, `worktree_list`, and `context` counts once per touched namespace. `stats`, `diagnose`, `tidy`, review bookkeeping tools and automatic recall do not count.
 - Defaults (`settings.review`): thresholds `[5, 10, 20]`, then every `20` operations; short-term memory is stale after `14` days; a memory is a skill candidate after `10` reads. All are configurable with `vault-cli config`.
 - Crossing a milestone creates a **pending** ticket. A stale short-term note also creates a ticket (`stale-short-term`) when it has not already been reviewed or deferred at its current hash.
 - `reconsider` creates a ticket from a correction at any count. The feedback is stored separately and the original memory is not replaced.
@@ -252,8 +253,9 @@ Weekly Markdown (`projects/<id>/weekly/YYYY-WW.md`, `shared/knowledge/weekly/`) 
 | --- | --- | --- |
 | `stats` | Counts by scope, kind and status; review queue (pending, ready, staged, failed); active tasks with owner liveness; weekly coverage; effective settings. Optionally narrowed to one project. | Read, uncounted |
 | `diagnose` | Health checks, each with a concrete fix: Node version, settings validity, database integrity (`quick_check`), project resolution, orphaned tasks, failed review actions, recall coverage, guard and team state. Reports hook status as `info` because a server cannot see host config; use `vault-cli hooks status`. Never repairs anything. | Read, uncounted |
+| `tidy` | Read-only audit of tags and links in the Markdown notes (section 12), and with `plan` a preview of a cleanup that names the exact `vault-cli tidy --apply` command for the user to run. Never edits a note. Records the audit time in `.agent-vault/tidy.json` for the `diagnose` reminder. | Read, uncounted |
 
-CLI equivalents: `vault-cli memory stats|diagnose|recall`.
+CLI equivalents: `vault-cli memory stats|diagnose|recall`, and `vault-cli tidy` (audit, `--plan`, `--apply`, `--backups`, `--undo`).
 
 ### 6.4 Review and correction
 
@@ -377,3 +379,81 @@ Every non-keyword response adds `search: { mode, method, candidates, truncated, 
 - **Notes.** `doc_search` supports `regex` and `chars` only; `method: "embedding"` fails with `unsupported_mode`, because embeddings cover durable memories, not Markdown files. Notes are streamed, never held whole: files over 1 MB are skipped as in every search, `regex` reads them in batches of 32, clips each body to its first 20 000 characters (`search.truncated` reports clipping) and keeps only the hits, so it scans every note in a vault of up to 20 000 files; `chars` scores the newest 500 notes by modification time (first 8 000 characters each), the same cap as memories. On a 1.05 GB set of 1 200 notes of 900 KB, the previous implementation ran out of memory under a 200 MB V8 heap limit and this one completes.
 
 `stats` and `diagnose` report the provider, model, and how many active knowledge entries are embedded. They never embed anything. With `http`, `stats` makes no network request and `diagnose` makes one health-only request.
+
+## 12. Tag and link maintenance
+
+Over time a vault collects tags that differ only in spelling, tags that repeat what a note's folder already says, and links that no longer resolve. `tidy` finds them; the user decides what to change.
+
+### 12.1 What is audited and what may change
+
+The audit reads every non-hidden Markdown file (at most 20 000 files, each up to 1 MB) and classifies it with the same rule `doc_write` uses to decide whether a note may be replaced in place:
+
+| Class | Examples | Audited | Cleanup may edit |
+| --- | --- | --- | --- |
+| Editable | `shared/knowledge/**`, `projects/<id>/` notes such as `index.md`, `specs/`, `wiki/`, `changes/`, `short-term.md` | Yes | Yes |
+| Legacy journal | `projects/<id>/long-term/`, `logs/`, `worktrees/`, `agents/handoffs/`, `agents/<role>/memory.md` | Yes | No: these records live in SQLite and the Markdown copy is read-only |
+| User | `user/` | Yes | No: append-only |
+| Outside | `_meta/`, root files, `shared/templates/` | Yes | No |
+| Generated | `weekly/` views | Ignored | No |
+
+The private SQLite memories are opened read-only and reported (tag counts, `source:<id>` provenance tags, spelling variants). Memories are immutable, so their tags are never rewritten. A team store on PostgreSQL or MySQL is shared and is not scanned.
+
+### 12.2 Tag findings
+
+Tags come from the frontmatter `tags` field (inline list, block list or comma-separated scalar) and from inline `#tags` in the body, outside code. A multi-line flow list is reported as unsupported and never rewritten.
+
+| Finding | Meaning | Accepted by |
+| --- | --- | --- |
+| Same name, written differently | Same tag after folding case, `_`, `.`, spaces and a leading `#`, or differing only by hyphenation (`agent-vault`, `agentvault`, `Agent-Vault`) | `--accept spelling`, the default, the only class safe to accept wholesale |
+| Singular and plural | `memory` and `memories` | `--accept plural` |
+| Probable typo | Edit distance 1 (2 for names of 14 or more characters), names of six or more characters; tags whose digits differ (`phase-1`, `phase-2`) are never typos | `--accept typo` after review |
+| One name contains the other | `agent-os` and `agent-os-sqlite` | Review only: `--merge old=new` |
+| Always on the same notes | Tags used on at least four notes, overlapping at 0.9 or more | Review only |
+| Repeats the note's location | The tag equals a folder name of the note's path (project id, branch folder, `logs` as `log`) on at least 80 % of at least three notes | `--drop <tag>` |
+| Families | `prefix:value` or `parent/child` tags with five or more values | Report only |
+
+The canonical spelling of a group is the one used on the most notes. Read-only notes count, because they cannot change, so merging toward them leaves fewer variants. A tie prefers the normalized spelling, then the hyphenated one. Tags Agent Vault writes itself (`short-term`, `long-term`, `skill`, `migrated`, `source:*`) are never renamed or dropped, but a variant such as `Skill` is merged into them.
+
+The report counts distinct tags now, after the safe merges and after every suggestion. In a vault that predates SQLite journals, most tag assignments usually sit in legacy journals that cleanup cannot touch. The report says so, and names `vault-cli memory migrate --project <id> --prune-legacy`, which moves a project's journals into SQLite where they carry no tags.
+
+### 12.3 Link findings
+
+Links are `[[wikilinks]]` (with aliases, anchors, `\|` in tables and `![[embeds]]`) and `[Markdown](links.md)`, outside code. Template placeholders such as `[[projects/<project-id>/x]]` are not links. A target resolves like Obsidian does: a vault path, a path relative to the note, or a short name that exists once.
+
+| Status | Meaning | Repair |
+| --- | --- | --- |
+| ok | Resolves | none |
+| ambiguous | A short name shared by several notes | none; reported |
+| case | Only the letter case differs | `--fix-links safe` |
+| folder | The target is a folder with `index.md` or `README.md` | `--fix-links safe` |
+| moved | A path whose file name exists once elsewhere. Generic names such as `spec`, `index` or `memory` are never trusted | `--fix-links all` |
+| external | A relative path that climbs out of the vault | none; not an error |
+| broken | Nothing matches | none; reported |
+
+Only wikilinks in editable notes are rewritten. Markdown links, links in read-only notes, and broken links are reported. Notes that nothing links to are listed among the editable notes, excluding hubs (`README`, `index`, `short-term`, `memory`).
+
+### 12.4 Cleanup
+
+`vault-cli tidy --plan [--accept ...] [--merge old=new,...] [--drop tag,...] [--fix-links safe|all]` previews and changes nothing; it prints the exact `--apply` command including `--expect <planId>`. `--apply` recomputes the plan, refuses to run when the id differs from `--expect`, and then:
+
+- edits only editable notes, re-checking every path with the `doc_write` rule and refusing symlinks, paths outside the vault and non-Markdown files, even if a hand-written plan names them;
+- refuses any note whose SHA-256 differs from the plan, and verifies that each tag list and link still matches before writing;
+- keeps the list style (inline, block, quoted only when every item was quoted), the line endings and every other byte of the note, and leaves `updated` untouched;
+- copies each original to `.agent-vault/tidy-backups/<id>/` (the ten newest are kept) before writing, and logs each file in a manifest;
+- never rewrites inline `#tags`; it lists the ones that still use a merged or dropped spelling.
+
+`vault-cli tidy --backups` lists backups; `--undo <id>` restores every note whose current content is exactly what the tidy wrote and leaves any note edited since. A second undo restores nothing.
+
+### 12.5 Aliases
+
+Accepted merges are recorded in `.agent-vault/tag-aliases.json` as `{ "<key of the old spelling>": "<canonical tag>" }`. `doc_write` and `remember` (personal and project memory) map new tags through it, so a spelling that was just consolidated does not grow back. Team memory and exact imports of legacy notes do not use it. An unreadable or malformed file is ignored. `--undo` restores the previous file.
+
+### 12.6 Periodic reminder
+
+Every audit records its time and counts in `.agent-vault/tidy.json`. `diagnose` reports `tidy` as `info` when no audit exists, when the last one is older than 30 days, or when it left safe merges or fixable or broken links in editable notes, and as `ok` otherwise. The check never audits by itself, so `diagnose` stays fast.
+
+### 12.7 Limits
+
+- Frontmatter lists and wikilinks are rewritten; inline tags, Markdown links and read-only notes are not.
+- Typo, overlap and co-occurrence findings are heuristics. They never apply without an explicit option.
+- Measured once on one machine, an audit of a vault with roughly 11 000 notes took about two seconds. An audit run through the CLI or the `tidy` tool writes only `.agent-vault/tidy.json`; `--plan` writes nothing; the audit function itself is read-only.

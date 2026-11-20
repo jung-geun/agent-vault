@@ -489,7 +489,7 @@ Before writing, the replaced bundles, the rule and recorder files, and the `agen
 
 ### 13.4 Rollback
 
-`vault-cli update --backups` lists backups, `--rollback <id|latest>` restores one: the bundles, and the rule, recorder and MCP entry only if each is still as the update left it. Anything edited since is left alone and reported. A backup can be rolled back once.
+`vault-cli update --backups` lists backups, `--rollback <id|latest>` restores one: the bundles, and the rule, recorder and MCP entry only if each is still as the update left it. Anything edited since is left alone and reported. A backup can be rolled back once. An update and its follow-up pass (section 13.8) are one update to the user: `--rollback` with either id, or `latest`, undoes the follow-up first and then the update, reports the update's id and lists the follow-up as `also undid`. Pruning counts the pair once, so the three newest updates are kept whole.
 
 ### 13.5 After an update
 
@@ -515,7 +515,7 @@ Every command the tool prints names a CLI that understands the plan: the short `
 
 The default source is `main`, which can lag behind a local build. A source whose version equals the installed one but whose files differ is therefore refused (`same_version_differs`), because it may be older; `--allow-same-version` installs it anyway, and a lower version needs `--allow-downgrade`.
 
-The code that runs an update is the build being replaced, so it cannot know an integration that only the new build installs (for example a new OMP file). After a successful, verified first pass, the command line and the `update` tool therefore run the new build's own CLI from the source tree once more (`update --from <source> --dry-run`, then `--expect <id>` if anything is left). That pass has its own backup (reported as `followUp`), and `AGENT_VAULT_UPDATE_FOLLOW_UP` stops it from starting another. If it fails, the first pass stays installed and verified and a note says to run the update once more. Library callers of `runUpdate` get no such pass unless they pass `followUp`.
+The code that runs an update is the build being replaced, so it cannot know an integration that only the new build installs (for example a new OMP file). After a successful, verified first pass, the command line and the `update` tool therefore run the new build's own CLI from the source tree once more (`update --from <source> --dry-run`, then `--expect <id>` if anything is left). That pass has its own backup (reported as `followUp`), recorded with `followUpOf` naming the update it completed. `AGENT_VAULT_UPDATE_FOLLOW_UP` carries that id to the pass and stops it from starting another. If it fails, the first pass stays installed and verified and a note says to run the update once more. Library callers of `runUpdate` get no such pass unless they pass `followUp`.
 
 ### 13.9 Updating through the agent: the `update` tool
 

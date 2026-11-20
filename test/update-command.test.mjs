@@ -150,3 +150,30 @@ test("an older installed CLI still gets the integrations that only the new build
   assert.match(again.stdout, /Already up to date/, "nothing is left for a second run");
   assert.doesNotMatch(again.stdout, /The new build installed/);
 });
+
+for (const how of ["latest", "the printed backup id"]) {
+  test(`rolling back with ${how} undoes an update together with its follow-up pass`, async (t) => {
+    const w = await world(t, { olderBuild: true });
+    const extension = path.join(w.home, ".omp/agent/extensions/agent-vault-update.ts");
+    const before = await w.installedVersion();
+    const run = await w.installedCli("--archive", w.url, "--yes");
+    assert.equal(await w.installedVersion(), "9.9.9");
+    assert.equal(existsSync(extension), true);
+    const printed = /Backup (\d{8}-\d{6}-\d{3}-[0-9a-f]{6}); undo with/.exec(run.stdout)[1];
+
+    const listed = JSON.parse((await w.installedCli("--backups", "--json")).stdout);
+    assert.equal(listed.length, 2);
+    assert.equal(listed[0].followUpOf, printed, "the newest backup is the follow-up and names the update it completed");
+    assert.equal(listed[1].id, printed);
+    assert.match((await w.installedCli("--backups")).stdout, new RegExp(`\\(follow-up of ${printed}\\)`));
+
+    const back = await w.installedCli("--rollback", how === "latest" ? "latest" : printed);
+    assert.match(back.stdout, new RegExp(`Rolled back update ${printed}: 9\\.9\\.9 -> `), "reports the update the user knows");
+    assert.match(back.stdout, /also undid its follow-up pass \d{8}-/);
+    assert.equal(await w.installedVersion(), before, "the new build is gone, not just the extra file");
+    assert.equal(existsSync(extension), false, "and so is the file the follow-up added");
+    const after = JSON.parse((await w.installedCli("--backups", "--json")).stdout);
+    assert.deepEqual(after.map((item) => item.rolledBack), [true, true]);
+    await assert.rejects(w.installedCli("--rollback", "latest"), /There is no update to roll back/);
+  });
+}

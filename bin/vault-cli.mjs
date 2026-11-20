@@ -543,13 +543,14 @@ try {
       if (flags["--expect"] !== undefined && (flags["--dry-run"] || !/^[0-9a-f]{12}$/.test(flags["--expect"]))) throw new Error("--expect takes the 12-character plan id printed by --dry-run, and only applies when updating.");
       if (flags["--backups"]) {
         const backups = await updater.listUpdateBackups();
-        show(backups.map(({ manifest, ...item }) => item), backups.length ? backups.map((item) => `${item.id}  ${Object.entries(item.from).map(([id, version]) => `${id} ${version ?? "?"}`).join(", ")} -> ${item.to}${item.rolledBack ? "  (rolled back)" : ""}`).join("\n") : "No update backups.");
+        show(backups.map(({ manifest, ...item }) => item), backups.length ? backups.map((item) => `${item.id}  ${Object.entries(item.from).map(([id, version]) => `${id} ${version ?? "?"}`).join(", ")} -> ${item.to}${item.followUpOf ? `  (follow-up of ${item.followUpOf})` : ""}${item.rolledBack ? "  (rolled back)" : ""}`).join("\n") : "No update backups.");
         break;
       }
       if (flags["--rollback"] !== undefined) {
         const result = await updater.rollbackUpdate({ id: flags["--rollback"] });
         show(result, [
           `Rolled back update ${result.id}: ${result.from} -> ${Object.values(result.to).join(", ")}.`,
+          ...(result.alsoRolledBack.length ? [`  also undid its follow-up pass ${result.alsoRolledBack.join(", ")}`] : []),
           ...result.restored.map((item) => `  restored ${item}`),
           ...result.skipped.map((item) => `  [WARN] left ${item.path}: ${item.reason}`),
           "[INFO] Restart OMP and any other host that launched Agent Vault.",

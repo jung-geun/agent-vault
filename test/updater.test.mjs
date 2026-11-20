@@ -261,6 +261,31 @@ test("only the newest backups are kept", async (t) => {
   assert.deepEqual((await readdir(path.join(w.home, ".agent-vault/update-backups"))).sort(), [...kept].sort());
 });
 
+test("an update and its follow-up pass are pruned together and rolled back together", async (t) => {
+  const w = await world(t);
+  const at = (second) => ({ now: new Date(Date.UTC(2026, 0, 1, 0, 0, second)) });
+  const first = (await w.update({ from: await w.bundle("1.0.0"), ...at(0) })).applied.id;
+  const follow = (await w.update({ from: await w.bundle("1.0.0", { note: " (found by the new build)" }), allowSameVersion: true, env: { ...process.env, AGENT_VAULT_UPDATE_FOLLOW_UP: first }, ...at(1) })).applied.id;
+  const listed = await listUpdateBackups(w.home);
+  assert.deepEqual(listed.map((item) => [item.id, item.followUpOf ?? null]), [[follow, first], [first, null]]);
+
+  const second = (await w.update({ from: await w.bundle("1.0.1"), ...at(2) })).applied.id;
+  const third = (await w.update({ from: await w.bundle("1.0.2"), ...at(3) })).applied.id;
+  assert.deepEqual((await listUpdateBackups(w.home)).map((item) => item.id), [third, second, follow, first], "a pair counts once, so three updates keep four backups");
+  const fourth = (await w.update({ from: await w.bundle("1.0.3"), ...at(4) })).applied.id;
+  assert.deepEqual((await listUpdateBackups(w.home)).map((item) => item.id), [fourth, third, second], "the pair goes away together, never half of it");
+
+  const solo = await world(t);
+  const one = (await solo.update({ from: await solo.bundle("1.0.0"), ...at(0) })).applied.id;
+  const two = (await solo.update({ from: await solo.bundle("1.0.0", { note: " (found by the new build)" }), allowSameVersion: true, env: { ...process.env, AGENT_VAULT_UPDATE_FOLLOW_UP: one }, ...at(1) })).applied.id;
+  assert.match(await readFile(solo.paths.recorder, "utf8"), /found by the new build/);
+  const undone = await rollbackUpdate({ home: solo.home });
+  assert.deepEqual([undone.id, undone.alsoRolledBack], [one, [two]], "latest names the update the user knows and undoes both");
+  assert.equal(await solo.version(solo.paths.omp), "0.9.0", "back to the build before the whole update, not just before the follow-up");
+  assert.doesNotMatch(await readFile(solo.paths.recorder, "utf8"), /found by the new build|recorder 1\.0\.0/);
+  assert.deepEqual((await listUpdateBackups(solo.home)).map((item) => item.rolledBack), [true, true]);
+});
+
 test("without an owned bundle there is nothing to update, and the running bundle is not its own source", async (t) => {
   const none = await world(t, { installed: null });
   await assert.rejects(none.update({ from: await none.bundle("1.0.0") }), (error) => error.code === "nothing_to_update" && /vault-cli install/.test(error.message));

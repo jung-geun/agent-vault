@@ -560,7 +560,7 @@ try {
         scope: flags["--local"] ? "local" : "global", dryRun: Boolean(flags["--dry-run"]), expect: flags["--expect"],
         verify: !flags["--no-verify"], allowDowngrade: Boolean(flags["--allow-downgrade"]), allowSameVersion: Boolean(flags["--allow-same-version"]), vault: targetVaultPath,
       });
-      show(result, updater.renderUpdate(result, { dryRun: Boolean(flags["--dry-run"]), source: { from: flags["--from"], archive: flags["--archive"], ref: flags["--ref"], scope: flags["--local"] ? "local" : "global" } }));
+      show(result, updater.renderUpdate(result, { dryRun: Boolean(flags["--dry-run"]), source: { from: flags["--from"], archive: flags["--archive"], ref: flags["--ref"], scope: flags["--local"] ? "local" : "global", allowDowngrade: Boolean(flags["--allow-downgrade"]), allowSameVersion: Boolean(flags["--allow-same-version"]) } }));
       break;
     }
 

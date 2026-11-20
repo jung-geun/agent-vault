@@ -713,6 +713,35 @@ test("the update tool will not apply while instruction files name removed tools,
   assert.equal((await server.call({ action: "check" })).body.error, "downgrade");
 });
 
+test("the printed command keeps the overrides the dry run needed, so running it as written works", async (t) => {
+  const w = await world(t, { installed: null });
+  await installAgents({ sourceDir: ROOT, home: w.home, cwd: w.cwd, scope: "global", method: "copy", targets: ["omp", "universal"] });
+  const installedVersion = await w.version(w.paths.omp);
+  const env = { ...process.env, HOME: w.home };
+  const run = (...args) => exec(process.execPath, [cli, "update", ...args], { env, cwd: w.cwd });
+
+  // Same version, different files: only --allow-same-version lets the plan exist at all.
+  const sameVersion = await w.bundle(installedVersion, { note: " (another build of the same version)" });
+  await assert.rejects(run("--from", sameVersion, "--dry-run"), (error) => /same_version_differs|already version/.test(error.stderr));
+  const dry = await run("--from", sameVersion, "--allow-same-version", "--dry-run");
+  const command = /To apply exactly this plan: (.+)$/m.exec(dry.stdout)?.[1];
+  assert.match(command, / --allow-same-version --expect [0-9a-f]{12}$/);
+  const ran = await exec("sh", ["-c", command], { env, cwd: w.cwd });
+  assert.match(ran.stdout, /Updated\. Backup/);
+  assert.match(await readFile(w.paths.recorder, "utf8"), /another build of the same version/);
+
+  // Likewise a deliberate downgrade, on a fresh install (the first update replaced the installed CLI with the fixture's stub).
+  const second = await world(t, { installed: null });
+  await installAgents({ sourceDir: ROOT, home: second.home, cwd: second.cwd, scope: "global", method: "copy", targets: ["omp", "universal"] });
+  const secondEnv = { ...process.env, HOME: second.home };
+  const older = await second.bundle("0.1.0");
+  const dryDown = await exec(process.execPath, [cli, "update", "--from", older, "--allow-downgrade", "--dry-run"], { env: secondEnv, cwd: second.cwd });
+  const downCommand = /To apply exactly this plan: (.+)$/m.exec(dryDown.stdout)?.[1];
+  assert.match(downCommand, / --allow-downgrade --expect [0-9a-f]{12}$/);
+  assert.match((await exec("sh", ["-c", downCommand], { env: secondEnv, cwd: second.cwd })).stdout, /Updated\. Backup/);
+  assert.equal(await second.version(second.paths.omp), "0.1.0");
+});
+
 test("the command a dry run prints can be copied and run as it is, and a wrong plan id is refused", async (t) => {
   // The installed bundle is a real build, so the command the dry run prints runs the real installed CLI.
   const w = await world(t, { installed: null });

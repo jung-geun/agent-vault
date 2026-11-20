@@ -146,7 +146,7 @@ export const TOOLS = [
       if (args.action === "apply" && !args.expect) throw new VaultToolError("invalid_arguments", "apply needs expect: the planId returned by an earlier check.");
       if (args.action === "check" && args.expect) throw new VaultToolError("invalid_arguments", "expect only applies to apply.");
       try {
-        const result = await runUpdate({ ref: args.ref, dryRun: args.action === "check", expect: args.expect, blockStaleInstructions: !args.acknowledgeInstructions, cwd: ctx.cwd, vault: ctx.vault });
+        const result = await runUpdate({ ref: args.ref, dryRun: args.action === "check", expect: args.expect, followUp: true, blockStaleInstructions: !args.acknowledgeInstructions, cwd: ctx.cwd, vault: ctx.vault });
         return summarizeUpdate(result, { ref: args.ref });
       } catch (error) {
         if (error.name === "UpdateError") throw new VaultToolError(error.code, error.message, error.rolledBack === undefined ? undefined : { rolledBack: error.rolledBack });

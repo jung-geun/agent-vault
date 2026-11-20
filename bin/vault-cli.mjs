@@ -570,7 +570,7 @@ try {
         finally { rl.close(); }
       } : undefined;
       const result = await updater.runUpdate({
-        ...source, dryRun: previewOnly, expect: flags["--expect"], confirm,
+        ...source, dryRun: previewOnly, expect: flags["--expect"], confirm, followUp: true,
         verify: !flags["--no-verify"], vault: targetVaultPath,
       });
       const text = updater.renderUpdate(result, { dryRun: previewOnly, source });

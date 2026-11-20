@@ -855,3 +855,19 @@ test("a host without OMP gets the commands from an update too, and rollback remo
   assert.equal(existsSync(path.join(w.home, ".local/bin/agent-vault")), false);
   assert.equal(await w.version(w.paths.universal), "0.9.0");
 });
+
+test("the follow-up pass is opt-in, never recurses, and its failure does not undo a verified update", async (t) => {
+  const off = await world(t);
+  const notRequested = await off.update({ from: await off.bundle("1.0.0") });
+  assert.doesNotMatch(notRequested.notes.join("\n"), /own pass|The new build installed/, "library callers get no extra pass unless they ask");
+
+  const guarded = await world(t);
+  const inChild = await guarded.update({ from: await guarded.bundle("1.0.0"), followUp: true, env: { ...process.env, AGENT_VAULT_UPDATE_FOLLOW_UP: "1" } });
+  assert.doesNotMatch(inChild.notes.join("\n"), /own pass/, "a pass started by a pass never starts another");
+
+  const broken = await world(t);
+  const result = await broken.update({ from: await broken.bundle("1.0.0"), followUp: true });
+  assert.match(result.notes.join("\n"), /The new build could not finish its own pass .*The update itself is installed and verified/);
+  assert.ok(result.applied.id);
+  assert.equal(await broken.version(broken.paths.omp), "1.0.0", "the verified first pass stays installed");
+});

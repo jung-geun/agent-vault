@@ -515,6 +515,8 @@ Every command the tool prints names a CLI that understands the plan: the short `
 
 The default source is `main`, which can lag behind a local build. A source whose version equals the installed one but whose files differ is therefore refused (`same_version_differs`), because it may be older; `--allow-same-version` installs it anyway, and a lower version needs `--allow-downgrade`.
 
+The code that runs an update is the build being replaced, so it cannot know an integration that only the new build installs (for example a new OMP file). After a successful, verified first pass, the command line and the `update` tool therefore run the new build's own CLI from the source tree once more (`update --from <source> --dry-run`, then `--expect <id>` if anything is left). That pass has its own backup (reported as `followUp`), and `AGENT_VAULT_UPDATE_FOLLOW_UP` stops it from starting another. If it fails, the first pass stays installed and verified and a note says to run the update once more. Library callers of `runUpdate` get no such pass unless they pass `followUp`.
+
 ### 13.9 Updating through the agent: the `update` tool
 
 `update` lets the agent do the same without the command line.

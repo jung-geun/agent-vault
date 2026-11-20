@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import http from "node:http";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,12 +28,21 @@ await registered.handler(argument, {
 console.log(JSON.stringify({ name: registered.name, description: registered.description, notes, confirms }));
 `;
 
-async function world(t) {
+async function world(t, { olderBuild = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "agent-vault-test-update-command-"));
   const home = path.join(root, "home");
   await mkdir(home);
   // The installed build is this tree; the "latest" build on the archive server is the same tree under a higher version.
-  await installAgents({ sourceDir: ROOT, home, cwd: root, scope: "global", method: "copy", targets: ["omp", "universal"] });
+  if (olderBuild) {
+    // A build from before the /agent-vault-update command existed: it installs everything else, but does not know that file.
+    const old = path.join(root, "older-build");
+    await mkdir(old);
+    for (const entry of ["bin", "lib", "integrations", "SKILL.md", "package.json"]) await cp(path.join(ROOT, entry), path.join(old, entry), { recursive: true });
+    const installer = await readFile(path.join(old, "lib/installer.mjs"), "utf8");
+    assert.match(installer, /^    \{ label: "\/agent-vault-update command".*\n/m);
+    await writeFile(path.join(old, "lib/installer.mjs"), installer.replace(/^    \{ label: "\/agent-vault-update command".*\n/m, ""));
+    await (await import(path.join(old, "lib/installer.mjs"))).installAgents({ sourceDir: old, home, cwd: root, scope: "global", method: "copy", targets: ["omp", "universal"] });
+  } else await installAgents({ sourceDir: ROOT, home, cwd: root, scope: "global", method: "copy", targets: ["omp", "universal"] });
   const next = path.join(root, "agent-vault-9.9.9");
   await mkdir(next);
   for (const entry of ["bin", "lib", "integrations", "SKILL.md", "package.json"]) await cp(path.join(ROOT, entry), path.join(next, entry), { recursive: true });
@@ -53,10 +63,15 @@ async function world(t) {
   const url = `http://127.0.0.1:${web.address().port}/main.tgz`;
   await writeFile(path.join(root, "driver.mjs"), driver);
   const installedVersion = async () => JSON.parse(await readFile(path.join(home, ".omp/agent/skills/agent-vault/package.json"), "utf8")).version;
+  // The children get their own temporary folder: `update` makes a transient agent-vault-update-* folder there, and updater.test.mjs
+  // asserts that none is left in the shared one while this file runs in parallel.
+  const env = { ...process.env, HOME: home, TMPDIR: path.join(root, "tmp"), NODE_NO_WARNINGS: "1" };
+  await mkdir(env.TMPDIR);
   const command = async (argument, answer, archiveUrl = url) => JSON.parse((await exec("bun", [path.join(root, "driver.mjs"), path.join(home, ".omp/agent/extensions/agent-vault-update.ts"), argument, answer], {
-    env: { ...process.env, HOME: home, AGENT_VAULT_ARCHIVE_URL: archiveUrl, NODE_NO_WARNINGS: "1" }, cwd: root,
+    env: { ...env, AGENT_VAULT_ARCHIVE_URL: archiveUrl }, cwd: root,
   })).stdout);
-  return { home, installedVersion, command, changeArchiveAfterNextDownload: () => { state.changeFrom = state.requests + 1; } };
+  const installedCli = (...args) => exec(process.execPath, [path.join(home, ".omp/agent/skills/agent-vault/bin/vault-cli.mjs"), "update", ...args], { env, cwd: root });
+  return { home, url, installedVersion, command, installedCli, changeArchiveAfterNextDownload: () => { state.changeFrom = state.requests + 1; } };
 }
 
 test("/agent-vault-update checks, asks, and installs exactly the plan that was shown", { skip: !bun && "bun is not installed" }, async (t) => {
@@ -115,4 +130,23 @@ test("/agent-vault-update installs nothing when the download changed between the
   assert.equal(result.notes.at(-1)[0], "error");
   assert.match(result.notes.at(-1)[1], /^Agent Vault update failed: The plan is now [0-9a-f]{12}, not [0-9a-f]{12}/);
   assert.equal(await w.installedVersion(), installed, "what the user did not see is not installed");
+});
+
+test("an older installed CLI still gets the integrations that only the new build knows, through the follow-up pass", async (t) => {
+  const w = await world(t, { olderBuild: true });
+  const extension = path.join(w.home, ".omp/agent/extensions/agent-vault-update.ts");
+  assert.equal(existsSync(extension), false, "the older build never installed the prompt command");
+  const preview = await w.installedCli("--archive", w.url, "--dry-run");
+  assert.doesNotMatch(preview.stdout, /agent-vault-update command/, "the older CLI cannot even see it");
+  assert.equal(existsSync(extension), false);
+
+  const run = await w.installedCli("--archive", w.url, "--yes");
+  assert.equal(await w.installedVersion(), "9.9.9");
+  assert.equal(existsSync(extension), true, "the new build installed what the old one did not know");
+  assert.match(run.stdout, /The new build installed \/agent-vault-update command that the build which ran this update does not know about \(backup \d{8}-/);
+  assert.match(run.stdout, /\/agent-vault-update command: installed/);
+
+  const again = await w.installedCli("--archive", w.url, "--yes");
+  assert.match(again.stdout, /Already up to date/, "nothing is left for a second run");
+  assert.doesNotMatch(again.stdout, /The new build installed/);
 });

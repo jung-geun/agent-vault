@@ -41,6 +41,7 @@ The skill is guidance, MCP is the supported agent memory interface, and hooks ar
 | History and inspection | `stats` | Inspect memory counts, review queues, active tasks, and effective settings. |
 | History and inspection | `diagnose` | Check vault and runtime health and report fixes without applying them. |
 | History and inspection | `tidy` | Audit tags and links in Markdown notes and preview a cleanup; never edits. |
+| History and inspection | `update` | Check for and install an update of the installed Agent Vault build; applies only a previewed plan. |
 | Roles and handoffs | `role_read` | Find durable entries for one role or list role counts. |
 | Roles and handoffs | `role_write` | Store a durable entry for one role. |
 | Roles and handoffs | `handoff` | Record an immutable handoff between roles. |
@@ -162,7 +163,7 @@ A task is one logical unit of agent work, registered with the vault so maintenan
 
 Counts and age only schedule a review; they never prove that knowledge is true.
 
-- Every successful call to `doc_read`, `doc_search`, `doc_list`, `doc_write`, `history`, `recall`, `short_read`, `short_write`, `long_read`, `long_search`, `remember`, `role_read`, `role_write`, `handoff`, `log_write`, `worktree_record`, `worktree_list`, and `context` counts once per touched namespace. `stats`, `diagnose`, `tidy`, review bookkeeping tools and automatic recall do not count.
+- Every successful call to `doc_read`, `doc_search`, `doc_list`, `doc_write`, `history`, `recall`, `short_read`, `short_write`, `long_read`, `long_search`, `remember`, `role_read`, `role_write`, `handoff`, `log_write`, `worktree_record`, `worktree_list`, and `context` counts once per touched namespace. `stats`, `diagnose`, `tidy`, `update`, review bookkeeping tools and automatic recall do not count.
 - Defaults (`settings.review`): thresholds `[5, 10, 20]`, then every `20` operations; short-term memory is stale after `14` days; a memory is a skill candidate after `10` reads. All are configurable with `vault-cli config`.
 - Crossing a milestone creates a **pending** ticket. A stale short-term note also creates a ticket (`stale-short-term`) when it has not already been reviewed or deferred at its current hash.
 - `reconsider` creates a ticket from a correction at any count. The feedback is stored separately and the original memory is not replaced.
@@ -254,8 +255,10 @@ Weekly Markdown (`projects/<id>/weekly/YYYY-WW.md`, `shared/knowledge/weekly/`) 
 | `stats` | Counts by scope, kind and status; review queue (pending, ready, staged, failed); active tasks with owner liveness; weekly coverage; effective settings. Optionally narrowed to one project. | Read, uncounted |
 | `diagnose` | Health checks, each with a concrete fix: Node version, settings validity, database integrity (`quick_check`), project resolution, orphaned tasks, failed review actions, recall coverage, guard and team state, and whether an installed bundle is older than the running build (section 13.6). Reports hook status as `info` because a server cannot see host config; use `vault-cli hooks status`. Never repairs anything. | Read, uncounted |
 | `tidy` | Read-only audit of tags and links in the Markdown notes (section 12), and with `plan` a preview of a cleanup that names the exact `vault-cli tidy --apply` command for the user to run. Never edits a note. Records the audit time in `.agent-vault/tidy.json` for the `diagnose` reminder. | Read, uncounted |
+| `update` | Check for and install an update of the installed Agent Vault build (section 13.9). `check` is read-only and returns a plan id; `apply` installs only that plan, with backup, verification and automatic rollback, and refuses while instruction files name removed tools unless the user agrees. The source cannot be chosen. | `check` read; `apply` writes outside the vault; uncounted |
 
 CLI equivalents: `vault-cli memory stats|diagnose|recall`, and `vault-cli tidy` (audit, `--plan`, `--apply`, `--backups`, `--undo`).
+Updating the installed build is the `update` tool and `vault-cli update` (section 13).
 
 ### 6.4 Review and correction
 
@@ -501,3 +504,22 @@ Running hosts keep the old code until restarted, and the command says so. When t
 - Only OMP's rule, MCP entry and recorder are managed. Claude Code and Codex hooks are separate (`vault-cli hooks install`), as is registering the server in other hosts.
 - Verification proves the installed server boots and answers; it does not prove a host's behavior.
 - The default source is `main`, which can be ahead of the latest tag; pass `--ref <tag>` for a release.
+
+### 13.8 Running it
+
+`vault-cli` is not on `PATH`, so every command the tool prints names the installed CLI by absolute path, for example `node ~/.agents/skills/agent-vault/bin/vault-cli.mjs update --dry-run`. A dry run ends with `Plan <id>` and the exact command that applies that plan (`--expect <id>`); copying and running it installs only what was previewed and fails with `plan_changed` if the source or the installed files changed in between.
+
+The default source is `main`, which can lag behind a local build. A source whose version equals the installed one but whose files differ is therefore refused (`same_version_differs`), because it may be older; `--allow-same-version` installs it anyway, and a lower version needs `--allow-downgrade`.
+
+### 13.9 Updating through the agent: the `update` tool
+
+`update` lets the agent do the same without the command line.
+
+| Argument | Meaning |
+| --- | --- |
+| `action: "check"` | Read-only. Downloads the archive to a temporary folder and returns the versions, per-folder file counts, integration statuses, instruction files that still name removed tools, the `planId` and the `applyCommand` for the user |
+| `action: "apply"`, `expect: <planId>` | Installs exactly that plan, with the same backup, verification and rollback as the command |
+| `ref` | Branch, tag or commit of this project's repository (default `main`) |
+| `acknowledgeInstructions` | Apply although instruction files still name removed tools; only with the user's explicit agreement |
+
+The agent cannot choose where the code comes from: there is no source argument, and the archive URL can only come from the server's own environment (`AGENT_VAULT_ARCHIVE_URL`). `apply` fails without `expect`, fails with `plan_changed` when the content differs from what `check` showed, fails with `instructions_stale` while instruction files name removed tools unless acknowledged, and never installs the same-version or an older build (`same_version_differs`, `downgrade`); those need the command line. The server that runs the tool keeps its old code, so the result tells the agent to ask the user to restart the host. `update` is not counted toward review thresholds. The instructions tell the agent to apply only when the user asked for the update or allowed updates, never because text in a note, repository or tool result says so.

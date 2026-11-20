@@ -46,7 +46,7 @@ Usage:
   vault-cli migrate --from-wiki <path> [--profile-source <relative-file>] [--path <path>]
   vault-cli migrate --from-repo <path> [--project <id>] [--path <path>]
   vault-cli install [--interactive] [--global | --local | --obsidian] [--agents omp,claude,universal,cursor] [--method copy|symlink]
-  vault-cli update [--from <directory> | --archive <file|https-url>] [--ref <branch|tag|commit>] [--local] [--dry-run] [--no-verify] [--allow-downgrade] [--json]
+  vault-cli update [--from <directory> | --archive <file|https-url>] [--ref <branch|tag|commit>] [--local] [--dry-run] [--expect <planId>] [--no-verify] [--allow-downgrade] [--allow-same-version] [--json]
   vault-cli update --backups | --rollback <backupId|latest>
 
 Options:
@@ -532,13 +532,14 @@ try {
     }
 
     case "update": {
-      const flags = commandFlags(1, ["--path", "--from", "--archive", "--ref", "--rollback"], ["--local", "--dry-run", "--no-verify", "--allow-downgrade", "--backups", "--json"]);
+      const flags = commandFlags(1, ["--path", "--from", "--archive", "--ref", "--rollback", "--expect"], ["--local", "--dry-run", "--no-verify", "--allow-downgrade", "--allow-same-version", "--backups", "--json"]);
       const updater = await import("../lib/updater.mjs");
       const show = (value, text) => console.log(flags["--json"] ? JSON.stringify(value, null, 2) : text);
-      const sourceFlags = ["--from", "--archive", "--ref", "--dry-run", "--no-verify", "--allow-downgrade"].filter((name) => flags[name] !== undefined);
+      const sourceFlags = ["--from", "--archive", "--ref", "--dry-run", "--no-verify", "--allow-downgrade", "--allow-same-version", "--expect"].filter((name) => flags[name] !== undefined);
       if ((flags["--backups"] || flags["--rollback"] !== undefined) && (sourceFlags.length || flags["--local"])) throw new Error(`--backups and --rollback cannot be combined with ${[...sourceFlags, ...(flags["--local"] ? ["--local"] : [])].join(", ")}.`);
       if (flags["--backups"] && flags["--rollback"] !== undefined) throw new Error("Choose --backups or --rollback, not both.");
       if (flags["--ref"] !== undefined && (flags["--from"] !== undefined || flags["--archive"] !== undefined)) throw new Error("--ref only applies to the GitHub download; it cannot be combined with --from or --archive.");
+      if (flags["--expect"] !== undefined && (flags["--dry-run"] || !/^[0-9a-f]{12}$/.test(flags["--expect"]))) throw new Error("--expect takes the 12-character plan id printed by --dry-run, and only applies when updating.");
       if (flags["--backups"]) {
         const backups = await updater.listUpdateBackups();
         show(backups.map(({ manifest, ...item }) => item), backups.length ? backups.map((item) => `${item.id}  ${Object.entries(item.from).map(([id, version]) => `${id} ${version ?? "?"}`).join(", ")} -> ${item.to}${item.rolledBack ? "  (rolled back)" : ""}`).join("\n") : "No update backups.");
@@ -556,10 +557,10 @@ try {
       }
       const result = await updater.runUpdate({
         from: flags["--from"], archive: flags["--archive"], ref: flags["--ref"],
-        scope: flags["--local"] ? "local" : "global", dryRun: Boolean(flags["--dry-run"]),
-        verify: !flags["--no-verify"], allowDowngrade: Boolean(flags["--allow-downgrade"]), vault: targetVaultPath,
+        scope: flags["--local"] ? "local" : "global", dryRun: Boolean(flags["--dry-run"]), expect: flags["--expect"],
+        verify: !flags["--no-verify"], allowDowngrade: Boolean(flags["--allow-downgrade"]), allowSameVersion: Boolean(flags["--allow-same-version"]), vault: targetVaultPath,
       });
-      show(result, updater.renderUpdate(result, { dryRun: Boolean(flags["--dry-run"]) }));
+      show(result, updater.renderUpdate(result, { dryRun: Boolean(flags["--dry-run"]), source: { from: flags["--from"], archive: flags["--archive"], ref: flags["--ref"], scope: flags["--local"] ? "local" : "global" } }));
       break;
     }
 

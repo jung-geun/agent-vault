@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import http from "node:http";
@@ -390,7 +390,7 @@ test("diagnose says when the installed bundle is older than the running build", 
   const report = await find(older.home);
   assert.equal(report.status, "info");
   assert.match(report.detail, /omp 0\.9\.0/);
-  assert.match(report.fix, /vault-cli update --dry-run/);
+  assert.match(report.fix, /node '[^']+\/bin\/vault-cli\.mjs' update --from '[^']+' --dry-run/, "a command that works as written, because vault-cli is not on PATH");
 
   const newer = await world(t, { installed: "99.0.0" });
   assert.equal(await find(newer.home), undefined, "an install newer than this build is not reported");
@@ -416,7 +416,7 @@ test("the update command prints a plan, applies with verification, lists backups
 
   const real = await run("--from", source, "--path", vault);
   assert.equal(real.code, 0, real.stderr);
-  assert.match(real.stdout, /Updated\. Backup \d{8}-\d{6}-\d{3}-[0-9a-f]{6}; undo with: vault-cli update --rollback/);
+  assert.match(real.stdout, /Updated\. Backup \d{8}-\d{6}-\d{3}-[0-9a-f]{6}; undo with: node '[^']+\/bin\/vault-cli\.mjs' update --rollback \d{8}-\d{6}-\d{3}-[0-9a-f]{6}/);
   assert.match(real.stdout, /Verified: the installed server answered as version 1\.0\.0 with 1 tools/);
   assert.match(real.stdout, /Restart OMP/);
   assert.match(real.stdout, /1 journal notes are Markdown files in the vault/);
@@ -558,3 +558,182 @@ test("a pre-rename rule that the update replaces is not reported, because it wil
   await w.update({ from: await w.bundle("1.0.0") });
   assert.doesNotMatch(await readFile(rule, "utf8"), /vault_context/);
 });
+
+test("a plan id names exactly the previewed content, and only a matching --expect applies", async (t) => {
+  const w = await world(t);
+  const source = await w.bundle("1.0.0");
+  const first = (await w.update({ from: source, dryRun: true })).plan.id;
+  assert.match(first, /^[0-9a-f]{12}$/);
+  assert.equal((await w.update({ from: source, dryRun: true })).plan.id, first, "the same source and install give the same id");
+  const before = await snapshot(w.home);
+  await assert.rejects(w.update({ from: source, expect: "000000000000" }), (error) => error.code === "plan_changed");
+  assert.deepEqual(await snapshot(w.home), before, "a mismatch changes nothing");
+  await writeFile(path.join(source, "lib/module.mjs"), "export const version = \"changed\";\n");
+  assert.notEqual((await w.update({ from: source, dryRun: true })).plan.id, first, "changed content, new id");
+  await assert.rejects(w.update({ from: source, expect: first }), (error) => error.code === "plan_changed", "the old id no longer applies");
+  const fresh = (await w.update({ from: source, dryRun: true })).plan.id;
+  assert.equal((await w.update({ from: source, expect: fresh })).applied.verified.version, "1.0.0");
+});
+
+test("a source with the same version but different files is refused, because it may be older than what is installed", async (t) => {
+  const w = await world(t, { installed: "1.0.0" });
+  const source = await w.bundle("1.0.0", { note: " (older build of the same version)" });
+  const before = await snapshot(w.home);
+  await assert.rejects(w.update({ from: source }), (error) => error.code === "same_version_differs" && /differ/.test(error.message) && /--allow-same-version/.test(error.message));
+  await assert.rejects(w.update({ from: source, dryRun: true }), (error) => error.code === "same_version_differs", "a dry run says so too");
+  assert.deepEqual(await snapshot(w.home), before);
+  const forced = await w.update({ from: source, allowSameVersion: true });
+  assert.match(await readFile(w.paths.recorder, "utf8"), /older build of the same version/);
+  assert.ok(forced.applied.id);
+  const identical = await w.update({ from: source });
+  assert.equal(identical.plan.current, true, "an identical copy of the same version is simply up to date");
+});
+
+test("applying can be blocked while instruction files name removed tools", async (t) => {
+  const w = await world(t);
+  await staleInstructions(w);
+  const source = await w.bundle("1.0.0");
+  const before = await snapshot(w.home);
+  await assert.rejects(w.update({ from: source, blockStaleInstructions: true }), (error) => error.code === "instructions_stale" && /vault_context -> context/.test(error.message));
+  assert.deepEqual(await snapshot(w.home), before);
+  assert.equal((await w.update({ from: source, blockStaleInstructions: true, dryRun: true })).plan.instructions.length, 2, "checking is never blocked");
+  assert.ok((await w.update({ from: source })).applied.id, "without the block the update proceeds, as the command line does");
+});
+
+async function tarballOf(w, name, version, options) {
+  const top = path.join(w.root, "tar-top", name);
+  await mkdir(path.dirname(top), { recursive: true });
+  await exec("cp", ["-R", await w.bundle(version, options), top]);
+  const file = path.join(w.root, `${name}.tgz`);
+  await exec("tar", ["-czf", file, "-C", path.dirname(top), name]);
+  return readFile(file);
+}
+
+// The real MCP server in a temporary home, with a loopback server standing in for the GitHub archive.
+async function mcpSession(t, w, holder) {
+  const base = await serve(t, { "/main.tgz": (_, res) => { res.writeHead(200); res.end(holder.bytes); } });
+  const vault = path.join(w.root, "vault");
+  await initVault(vault);
+  const child = spawn(process.execPath, [path.join(ROOT, "bin/vault-mcp.mjs"), "--path", vault], {
+    cwd: w.cwd, stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, NODE_NO_WARNINGS: "1", HOME: w.home, AGENT_VAULT_ARCHIVE_URL: `${base}/main.tgz` },
+  });
+  t.after(() => child.kill());
+  let buffer = "";
+  const waiting = new Map();
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    for (let index = buffer.indexOf("\n"); index !== -1; index = buffer.indexOf("\n")) {
+      const message = JSON.parse(buffer.slice(0, index));
+      buffer = buffer.slice(index + 1);
+      waiting.get(message.id)?.(message);
+    }
+  });
+  let id = 0;
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const mine = ++id;
+    const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method}`)), 60_000);
+    waiting.set(mine, (message) => { clearTimeout(timer); resolve(message); });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: mine, method, params })}\n`);
+  });
+  await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } });
+  return { request, call: async (args) => {
+    const reply = await request("tools/call", { name: "update", arguments: args });
+    return { isError: reply.result.isError === true, body: JSON.parse(reply.result.content[0].text) };
+  } };
+}
+
+test("the update tool checks read-only and installs only the plan that was previewed", async (t) => {
+  const w = await world(t);
+  const holder = { bytes: await tarballOf(w, "agent-vault-main", "1.0.0") };
+  const server = await mcpSession(t, w, holder);
+  const tool = (await server.request("tools/list", {})).result.tools.find((item) => item.name === "update");
+  assert.deepEqual(Object.keys(tool.inputSchema.properties), ["action", "ref", "expect", "acknowledgeInstructions"], "the agent cannot choose where the code comes from");
+  assert.match(tool.description, /The source cannot be changed/);
+
+  const before = await snapshot(w.home);
+  const check = await server.call({ action: "check" });
+  assert.equal(check.isError, false, JSON.stringify(check.body));
+  assert.match(check.body.planId, /^[0-9a-f]{12}$/);
+  assert.equal(check.body.current, false);
+  assert.equal(check.body.source.version, "1.0.0");
+  assert.deepEqual(check.body.targets.filter((item) => item.action === "update").map((item) => [item.id, item.from, item.to]), [["universal", "0.9.0", "1.0.0"], ["omp", "0.9.0", "1.0.0"]]);
+  assert.match(check.body.applyCommand, new RegExp(`^node '[^']+/bin/vault-cli\\.mjs' update --expect ${check.body.planId}$`));
+  assert.deepEqual(await snapshot(w.home), before, "check changes nothing");
+  assert.equal(existsSync(path.join(w.home, ".agent-vault")), false);
+  assert.equal((await server.call({ action: "check" })).body.planId, check.body.planId, "the id is stable");
+
+  for (const [args, code] of [[{ action: "apply" }, "invalid_arguments"], [{ action: "check", expect: check.body.planId }, "invalid_arguments"], [{ action: "apply", expect: "000000000000" }, "plan_changed"]]) {
+    const result = await server.call(args);
+    assert.deepEqual([result.isError, result.body.error], [true, code], JSON.stringify(args));
+  }
+  for (const bad of [{ action: "apply", expect: "xyz" }, { action: "check", ref: "../x" }, { action: "sideload" }, {}]) {
+    const result = await server.call(bad);
+    assert.equal(result.isError, true, JSON.stringify(bad));
+  }
+  assert.deepEqual(await snapshot(w.home), before, "refusals change nothing");
+
+  holder.bytes = await tarballOf(w, "agent-vault-main-2", "1.0.0", { note: " (changed after the preview)" });
+  assert.equal((await server.call({ action: "apply", expect: check.body.planId })).body.error, "plan_changed", "content that changed since the check is not installed");
+  assert.deepEqual(await snapshot(w.home), before);
+
+  holder.bytes = await tarballOf(w, "agent-vault-main-3", "1.0.0");
+  const apply = await server.call({ action: "apply", expect: check.body.planId });
+  assert.equal(apply.isError, false, JSON.stringify(apply.body));
+  assert.deepEqual(apply.body.applied.verified, { version: "1.0.0", tools: 1 });
+  assert.match(apply.body.applied.rollbackCommand, /^node '[^']+\/bin\/vault-cli\.mjs' update --rollback \d{8}-\d{6}-\d{3}-[0-9a-f]{6}$/);
+  assert.match(apply.body.next, /restart/);
+  assert.equal(await w.version(w.paths.omp), "1.0.0");
+  const again = await server.call({ action: "check" });
+  assert.equal(again.body.current, true);
+  assert.match(again.body.next, /current/);
+});
+
+test("the update tool will not apply while instruction files name removed tools, nor install the same or an older version", async (t) => {
+  const w = await world(t);
+  await staleInstructions(w);
+  const holder = { bytes: await tarballOf(w, "agent-vault-main", "1.0.0") };
+  const server = await mcpSession(t, w, holder);
+  const check = await server.call({ action: "check" });
+  assert.equal(check.body.instructions.length, 2);
+  assert.match(check.body.next, /Do not apply yet/);
+  const before = await snapshot(w.home);
+  const blocked = await server.call({ action: "apply", expect: check.body.planId });
+  assert.deepEqual([blocked.isError, blocked.body.error], [true, "instructions_stale"]);
+  assert.match(blocked.body.message, /vault_context -> context/);
+  assert.deepEqual(await snapshot(w.home), before);
+  const agreed = await server.call({ action: "apply", expect: check.body.planId, acknowledgeInstructions: true });
+  assert.equal(agreed.isError, false, JSON.stringify(agreed.body));
+  assert.equal(await w.version(w.paths.omp), "1.0.0");
+
+  holder.bytes = await tarballOf(w, "agent-vault-main-same", "1.0.0", { note: " (a different build of the same version)" });
+  assert.equal((await server.call({ action: "check" })).body.error, "same_version_differs");
+  holder.bytes = await tarballOf(w, "agent-vault-main-older", "0.5.0");
+  assert.equal((await server.call({ action: "check" })).body.error, "downgrade");
+});
+
+test("the command a dry run prints can be copied and run as it is, and a wrong plan id is refused", async (t) => {
+  // The installed bundle is a real build, so the command the dry run prints runs the real installed CLI.
+  const w = await world(t, { installed: null });
+  await installAgents({ sourceDir: ROOT, home: w.home, cwd: w.cwd, scope: "global", method: "copy", targets: ["omp", "universal"] });
+  const installedVersion = await w.version(w.paths.omp);
+  const source = await w.bundle("9.0.0");
+  const env = { ...process.env, HOME: w.home };
+  const dry = await exec(process.execPath, [cli, "update", "--from", source, "--dry-run"], { env, cwd: w.cwd });
+  const command = /To apply exactly this plan: (.+)$/m.exec(dry.stdout)?.[1];
+  assert.match(command, new RegExp(`^node '${w.paths.omp}/bin/vault-cli\\.mjs' update --from '[^']+' --expect [0-9a-f]{12}$`), "an absolute path, because vault-cli is not on PATH");
+  assert.equal(await w.version(w.paths.omp), installedVersion);
+
+  const refuse = (...args) => exec(process.execPath, [cli, "update", ...args], { env, cwd: w.cwd }).then(() => null, (error) => error.stderr);
+  assert.match(await refuse("--from", source, "--expect", "000000000000"), /The plan is now [0-9a-f]{12}, not 000000000000/);
+  assert.match(await refuse("--from", source, "--expect", "abc"), /12-character plan id/);
+  assert.match(await refuse("--from", source, "--dry-run", "--expect", "000000000000"), /only applies when updating/);
+  assert.equal(await w.version(w.paths.omp), installedVersion, "refusals change nothing");
+
+  const ran = await exec("sh", ["-c", command], { env, cwd: w.cwd });
+  assert.match(ran.stdout, /Updated\. Backup/);
+  assert.match(ran.stdout, /Verified: the installed server answered as version 9\.0\.0/);
+  assert.equal(await w.version(w.paths.omp), "9.0.0");
+});
+

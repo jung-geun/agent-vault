@@ -477,6 +477,7 @@ A source is used only after it is checked: package name `agent-vault-skill`, a s
 - Every installed bundle that is a real folder owned by Agent Vault. A link follows the bundle it points to. A folder Agent Vault did not install is skipped, and nothing new is installed (use `vault-cli install`). `--local` works on the project's folders instead of the home ones.
 - For a global OMP install: the user rule (only if it is a known earlier version), the MCP entry (custom `env` and other servers are kept) and the recorder (only while it still carries its managed marker). Anything else there is reported as preserved.
 - Files that an older bundle had and the new one does not are left in place.
+- Instruction files that name tools this build no longer has. The 1.x rename removed `vault_context`, `memory_read`, `memory_search`, `memory_list`, `memory_write`, `agent_memory_read`, `agent_memory_write`, `agent_handoff`, `short_memory_read`, `short_memory_write` and `long_memory_write` without aliases (they became `context`, `doc_read`, `doc_search`, `doc_list`, `doc_write`, `role_read`, `role_write`, `handoff`, `short_read`, `short_write` and `remember`). The plan, with or without `--dry-run`, looks for them in `~/.omp/agent/AGENTS.md` and `RULES.md`, `~/.agents/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, the OMP rule when the update leaves it alone, and `AGENTS.md` and `CLAUDE.md` in the current directory, and prints a `[WARN]` with each file, line and replacement. Those files belong to the user and are never edited; until they are fixed, an agent is told to call tools that do not exist. A repository's managed block is rewritten by `vault-cli init` inside it.
 - A source older than what is installed is refused unless `--allow-downgrade`. When nothing differs the command reports that and changes nothing. `--dry-run` prints the plan, including per-folder counts of changed, new and unchanged files, and writes nothing.
 
 ### 13.3 Backup and verification
@@ -493,7 +494,7 @@ Running hosts keep the old code until restarted, and the command says so. When t
 
 ### 13.6 Detection
 
-`diagnose` reports `install` as `info` when an installed bundle's version is lower than the build that is running, with the fix `vault-cli update --dry-run`. It compares versions only and makes no network request.
+`diagnose` reports `install` as `info` when an installed bundle's version is lower than the build that is running, with the fix `vault-cli update --dry-run`. It compares versions only and makes no network request. It also reports `instructions` as `info` for any of the files in section 13.2 that still name a retired tool.
 
 ### 13.7 Limits
 

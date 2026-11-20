@@ -13,7 +13,7 @@ import { RECORDER_MARKER, installAgents } from "../lib/installer.mjs";
 import { initVault } from "../lib/vault-core.mjs";
 import { closeMemoryDbs } from "../lib/memory-db.mjs";
 import { diagnoseMemory } from "../lib/memory-inspect.mjs";
-import { compareVersions, githubArchiveRequest, listUpdateBackups, rollbackUpdate, runUpdate, smokeTest, UPDATE_BACKUPS_KEPT } from "../lib/updater.mjs";
+import { RETIRED_TOOL_NAMES, compareVersions, findRetiredToolReferences, githubArchiveRequest, listUpdateBackups, renderUpdate, rollbackUpdate, runUpdate, smokeTest, UPDATE_BACKUPS_KEPT } from "../lib/updater.mjs";
 
 const exec = promisify(execFile);
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -448,4 +448,113 @@ test("the update command prints a plan, applies with verification, lists backups
     assert.match(result.stderr, pattern, args.join(" "));
   }
   assert.equal(await w.version(w.paths.omp), "0.9.0", "misuse changes nothing");
+});
+
+// Instruction files that agents read at session start, written the way the pre-rename setup left them.
+async function staleInstructions(w) {
+  await mkdir(path.join(w.home, ".omp/agent"), { recursive: true });
+  await writeFile(path.join(w.home, ".omp/agent/AGENTS.md"), "# Mine\n\nAt start call `vault_context`, then `memory_search`.\nStore with `short_memory_write` and `long_memory_write`.\nHost name mcp__agent_vault_vault_context is a different identifier.\nAlready new: `context`, `doc_search`.\n");
+  await writeFile(path.join(w.home, ".omp/agent/RULES.md"), "No tool names here.\n");
+  await writeFile(path.join(w.cwd, "AGENTS.md"), "Hand off with `agent_handoff`.\n");
+}
+
+test("instruction files that still name retired tools are found with line numbers and replacements, and never edited", async (t) => {
+  const w = await world(t);
+  await staleInstructions(w);
+  const source = await w.bundle("1.0.0");
+  const newServer = `${await readFile(path.join(source, "bin/vault-mcp.mjs"), "utf8")}\n// name: "context"\n`;
+  await writeFile(path.join(source, "bin/vault-mcp.mjs"), newServer);
+  const files = ["/.omp/agent/AGENTS.md", "/.omp/agent/RULES.md"].map((rel) => path.join(w.home, rel));
+  const before = await Promise.all([...files, path.join(w.cwd, "AGENTS.md")].map((file) => readFile(file, "utf8")));
+
+  const found = await findRetiredToolReferences({ sourceDir: source, home: w.home, cwd: w.cwd });
+  assert.deepEqual(found.map((item) => [path.basename(path.dirname(item.path)) === "agent" ? "home" : "cwd", item.count]), [["home", 4], ["cwd", 1]]);
+  assert.deepEqual(found[0].hits, [
+    { line: 3, name: "vault_context", use: "context" }, { line: 3, name: "memory_search", use: "doc_search" },
+    { line: 4, name: "short_memory_write", use: "short_write" }, { line: 4, name: "long_memory_write", use: "remember" },
+  ], "a prefixed host identifier and already-renamed tools are not reported");
+  assert.deepEqual(found[1].hits, [{ line: 1, name: "agent_handoff", use: "handoff" }]);
+
+  const dry = await w.update({ from: source, dryRun: true });
+  assert.deepEqual(dry.plan.instructions.map((item) => item.count), [4, 1]);
+  const text = renderUpdate(dry, { dryRun: true });
+  assert.match(text, /\[WARN\] These instruction files still tell agents to call tools that this build no longer has/);
+  assert.match(text, /line 3: vault_context -> context/);
+  assert.match(text, /run vault-cli init inside it/);
+  const applied = await w.update({ from: source });
+  assert.equal(applied.plan.instructions.length, 2, "the real update warns too");
+  assert.deepEqual(await Promise.all([...files, path.join(w.cwd, "AGENTS.md")].map((file) => readFile(file, "utf8"))), before, "the user's files are not edited");
+});
+
+test("a tool the new build still provides is not reported, and a clean setup prints no warning", async (t) => {
+  const w = await world(t);
+  await staleInstructions(w);
+  const source = await w.bundle("1.0.0");
+  const server = await readFile(path.join(source, "bin/vault-mcp.mjs"), "utf8");
+  await writeFile(path.join(source, "bin/vault-mcp.mjs"), `${server}\n// name: "vault_context", name: "memory_search", name: "short_memory_write", name: "long_memory_write", name: "agent_handoff"\n`);
+  assert.deepEqual(await findRetiredToolReferences({ sourceDir: source, home: w.home, cwd: w.cwd }), []);
+
+  const clean = await world(t);
+  const plan = await clean.update({ from: await clean.bundle("1.0.0"), dryRun: true });
+  assert.deepEqual(plan.plan.instructions, []);
+  assert.doesNotMatch(renderUpdate(plan, { dryRun: true }), /\[WARN\]/);
+});
+
+test("an installed rule that the user edited is reported, one that the update replaces is not", async (t) => {
+  const w = await world(t);
+  const rule = path.join(w.home, ".agents/rules/agent-vault.md");
+  await writeFile(rule, "My own copy: call `vault_context` first.\n");
+  const result = await w.update({ from: await w.bundle("1.0.0"), dryRun: true });
+  assert.deepEqual(result.plan.integrations.find((item) => item.label === "OMP user rule").status, "preserved existing file with different content");
+  assert.deepEqual(result.plan.instructions.map((item) => item.path), [rule], "left alone by the update, so it still names a retired tool");
+});
+
+test("diagnose lists instruction files that name retired tools", async (t) => {
+  const w = await world(t, { installed: null });
+  const vault = path.join(w.root, "vault");
+  await initVault(vault);
+  const find = async () => (await diagnoseMemory(vault, {}, { home: w.home })).checks.find((check) => check.name === "instructions");
+  assert.equal(await find(), undefined, "nothing to report on a clean home");
+  await staleInstructions(w);
+  const check = await find();
+  assert.equal(check.status, "info");
+  assert.match(check.detail, /AGENTS\.md \(4\)/);
+  assert.match(check.detail, /vault_context -> context/);
+  assert.match(check.fix, /vault-cli init/);
+});
+
+test("the update command prints the warning and includes it in JSON", async (t) => {
+  const w = await world(t);
+  await staleInstructions(w);
+  const source = await w.bundle("1.0.0");
+  const run = (...args) => exec(process.execPath, [cli, "update", ...args], { env: { ...process.env, HOME: w.home }, cwd: w.cwd });
+  const text = (await run("--from", source, "--dry-run")).stdout;
+  assert.match(text, /\[WARN\].*retired|\[WARN\] These instruction files/);
+  assert.match(text, /vault_context -> context/);
+  const json = JSON.parse((await run("--from", source, "--dry-run", "--json")).stdout);
+  assert.deepEqual(json.plan.instructions.map((item) => item.count), [4, 1]);
+});
+
+test("the retired-name table matches the Obsidian plugin's and the real server", async () => {
+  const plugin = await readFile(path.join(ROOT, "integrations/obsidian/agent-vault-wiki/data.cjs"), "utf8");
+  const table = Object.fromEntries([...plugin.match(/const LEGACY_TOOL_NAMES = \{([\s\S]*?)\};/)[1].matchAll(/(\w+): "(\w+)"/g)].map((match) => [match[1], match[2]]));
+  for (const [old, current] of Object.entries(table)) assert.equal(RETIRED_TOOL_NAMES[old], current, `${old} maps the same way in the plugin`);
+  const server = await readFile(path.join(ROOT, "bin/vault-mcp.mjs"), "utf8");
+  for (const [old, current] of Object.entries(RETIRED_TOOL_NAMES)) {
+    assert.equal(server.includes(`name: "${old}"`), false, `${old} is really gone from the server`);
+    assert.equal(server.includes(`name: "${current}"`), true, `${current} exists in the server`);
+  }
+});
+
+test("a pre-rename rule that the update replaces is not reported, because it will no longer name retired tools", async (t) => {
+  const w = await world(t);
+  const rule = path.join(w.home, ".agents/rules/agent-vault.md");
+  await writeFile(rule, await readFile(path.join(ROOT, "test/fixtures/agent-vault.rule.pre-tool-rename.md")));
+  const before = await readFile(rule, "utf8");
+  assert.match(before, /vault_context/);
+  const result = await w.update({ from: await w.bundle("1.0.0"), dryRun: true });
+  assert.equal(result.plan.integrations.find((item) => item.label === "OMP user rule").status, "updated from legacy version");
+  assert.deepEqual(result.plan.instructions, [], "the stale rule is not listed: the update rewrites it");
+  await w.update({ from: await w.bundle("1.0.0") });
+  assert.doesNotMatch(await readFile(rule, "utf8"), /vault_context/);
 });

@@ -659,7 +659,7 @@ test("the update tool checks read-only and installs only the plan that was previ
   assert.equal(check.body.current, false);
   assert.equal(check.body.source.version, "1.0.0");
   assert.deepEqual(check.body.targets.filter((item) => item.action === "update").map((item) => [item.id, item.from, item.to]), [["universal", "0.9.0", "1.0.0"], ["omp", "0.9.0", "1.0.0"]]);
-  assert.match(check.body.applyCommand, new RegExp(`^node '[^']+/bin/vault-cli\\.mjs' update --expect ${check.body.planId}$`));
+  assert.equal(check.body.applyCommand, `node '${path.join(ROOT, "bin/vault-cli.mjs")}' update --expect ${check.body.planId}`, "the CLI of the tree that made the plan");
   assert.deepEqual(await snapshot(w.home), before, "check changes nothing");
   assert.equal(existsSync(path.join(w.home, ".agent-vault")), false);
   assert.equal((await server.call({ action: "check" })).body.planId, check.body.planId, "the id is stable");
@@ -668,7 +668,9 @@ test("the update tool checks read-only and installs only the plan that was previ
     const result = await server.call(args);
     assert.deepEqual([result.isError, result.body.error], [true, code], JSON.stringify(args));
   }
-  for (const bad of [{ action: "apply", expect: "xyz" }, { action: "check", ref: "../x" }, { action: "sideload" }, {}]) {
+  for (const ref of ["main", "v1.2.3", "1.2.3"]) assert.equal((await server.call({ action: "check", ref })).isError, false, `${ref} is an accepted ref`);
+  const freeRefs = ["0123456789abcdef0123456789abcdef01234567", "refs/pull/1/head", "feature/x", "v1.2", "1.2.3-rc.1", "main2", "Main"].map((ref) => ({ action: "check", ref }));
+  for (const bad of [{ action: "apply", expect: "xyz" }, { action: "check", ref: "../x" }, { action: "sideload" }, {}, ...freeRefs]) {
     const result = await server.call(bad);
     assert.equal(result.isError, true, JSON.stringify(bad));
   }
@@ -742,17 +744,21 @@ test("the printed command keeps the overrides the dry run needed, so running it 
   assert.equal(await second.version(second.paths.omp), "0.1.0");
 });
 
-test("the command a dry run prints can be copied and run as it is, and a wrong plan id is refused", async (t) => {
-  // The installed bundle is a real build, so the command the dry run prints runs the real installed CLI.
+test("the printed command runs the CLI that made the plan, so it works even when the installed CLI is older and lacks the flags", async (t) => {
   const w = await world(t, { installed: null });
   await installAgents({ sourceDir: ROOT, home: w.home, cwd: w.cwd, scope: "global", method: "copy", targets: ["omp", "universal"] });
+  // The installed CLI is older than the source by definition: make it reject the flags the printed command uses.
+  for (const dir of [w.paths.omp, w.paths.universal]) await writeFile(path.join(dir, "bin/vault-cli.mjs"), 'console.error("[FAIL] Unknown option: --expect");\nprocess.exit(1);\n');
   const installedVersion = await w.version(w.paths.omp);
   const source = await w.bundle("9.0.0");
   const env = { ...process.env, HOME: w.home };
   const dry = await exec(process.execPath, [cli, "update", "--from", source, "--dry-run"], { env, cwd: w.cwd });
   const command = /To apply exactly this plan: (.+)$/m.exec(dry.stdout)?.[1];
-  assert.match(command, new RegExp(`^node '${w.paths.omp}/bin/vault-cli\\.mjs' update --from '[^']+' --expect [0-9a-f]{12}$`), "an absolute path, because vault-cli is not on PATH");
+  assert.equal(command.startsWith(`node '${cli}' update --from '`), true, "an absolute path to the CLI that printed it, because vault-cli is not on PATH");
+  assert.equal(command.includes(w.paths.omp), false, "never the installed copy");
+  assert.match(command, / --expect [0-9a-f]{12}$/);
   assert.equal(await w.version(w.paths.omp), installedVersion);
+  await assert.rejects(exec(process.execPath, [path.join(w.paths.omp, "bin/vault-cli.mjs"), "update", "--expect", "000000000000"]), /Unknown option: --expect/, "the installed CLI really would have refused");
 
   const refuse = (...args) => exec(process.execPath, [cli, "update", ...args], { env, cwd: w.cwd }).then(() => null, (error) => error.stderr);
   assert.match(await refuse("--from", source, "--expect", "000000000000"), /The plan is now [0-9a-f]{12}, not 000000000000/);

@@ -47,10 +47,14 @@ test("target catalog exposes real global and local agent skill paths", async (t)
 
 test("copy installs only selected agent trees without unselected OMP config", async (t) => {
   const options = await fixture(t);
-  const result = await installAgents({ ...options, targets: ["claude", "cursor"] });
+  const result = await installAgents({ ...options, targets: ["claude", "cursor"], env: { PATH: "/usr/bin" } });
   assert.deepEqual(result.targets.map(({ id }) => id), ["claude", "cursor"]);
-  assert.equal(result.integrations.length, 0);
-  assert.equal(result.notes.length, 2);
+  assert.deepEqual(result.integrations.map((item) => item.label), ["command agent-vault", "command vault-cli"], "no OMP files, but the commands exist for every host");
+  assert.equal(await readFile(path.join(options.home, ".local/bin/agent-vault"), "utf8"), launcherScript(path.join(options.home, ".claude/skills/agent-vault")), "without a universal bundle the launcher runs the host's own copy");
+  assert.equal(result.notes.length, 3);
+  assert.match(result.notes.at(-1), /\.local\/bin is not on your PATH.*export PATH=/, "install tells the user when the shell cannot find the new commands");
+  const onPath = await previewInstallAgents({ ...options, targets: ["claude", "cursor"], env: { PATH: `/usr/bin${path.delimiter}${path.join(options.home, ".local/bin")}` } });
+  assert.equal(onPath.notes.some((note) => /not on your PATH/.test(note)), false, "no note once the directory is on PATH, and none when nothing changed");
   for (const target of result.targets) {
     assert.equal((await lstat(target.path)).isDirectory(), true);
     assert.equal((await lstat(target.path)).isSymbolicLink(), false);
@@ -86,8 +90,8 @@ test("global OMP installs integrations and preserves unrelated MCP settings", as
   const result = await installAgents(options);
   assert.equal(result.integrations.length, 5);
   const launcherPath = path.join(options.home, ".local/bin/agent-vault");
-  const bundle = path.join(options.home, ".omp/agent/skills/agent-vault");
-  assert.equal(await readFile(launcherPath, "utf8"), launcherScript(bundle), "the launcher runs the bundle OMP launches");
+  const bundle = path.join(options.home, ".agents/skills/agent-vault");
+  assert.equal(await readFile(launcherPath, "utf8"), launcherScript(bundle), "the launcher runs the shared universal bundle");
   assert.equal(await readFile(path.join(options.home, ".local/bin/vault-cli"), "utf8"), launcherScript(bundle));
   assert.ok(((await lstat(launcherPath)).mode & 0o111) !== 0, "executable");
   assert.equal(await findLauncher(path.join(bundle, "bin/vault-cli.mjs"), { PATH: `/nowhere${path.delimiter}${path.dirname(launcherPath)}` }), "agent-vault");
@@ -121,7 +125,7 @@ test("copy-to-link conflicts preserve whole directories and skip OMP integration
   assert.match(result.targets.find(({ id }) => id === "omp").status, /^preserved existing directory/);
   assert.equal((await lstat(omp)).isDirectory(), true);
   assert.equal(await readFile(path.join(omp, "personal.txt"), "utf8"), "Keep me\n");
-  assert.equal(result.integrations.length, 0);
+  assert.deepEqual(result.integrations.filter((item) => !item.label.startsWith("command ")), [], "no OMP integration is written");
 });
 
 test("unowned trees, unsafe links and symlinked parents remain untouched", async (t) => {
@@ -319,7 +323,7 @@ test("explicit Symlink preview preserves a prior CLI copy and skips all OMP inte
   const plan = { ...options, method: "symlink" };
   const preview = await previewInstallAgents(plan);
   assert.match(preview.targets.find(({ id }) => id === "omp").status, /^preserved existing directory.*choose Copy to upgrade/);
-  assert.deepEqual(preview.integrations, []);
+  assert.deepEqual(preview.integrations.filter((item) => !item.label.startsWith("command ")), []);
   assert.match(preview.notes.join("\n"), /OMP MCP, rule and recorder preserved/);
   assert.deepEqual(await installAgents(plan), preview);
   assert.equal((await lstat(options.omp)).isSymbolicLink(), false);

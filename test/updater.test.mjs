@@ -241,7 +241,8 @@ test("an OMP folder Agent Vault did not install and an unrelated MCP config are 
   await writeFile(w.paths.mcp, JSON.stringify({ mcpServers: { other: { command: "x" } } }));
   const result = await w.update({ from: await w.bundle("1.0.0") });
   assert.deepEqual(result.applied.updated.map((item) => item.id), ["universal"]);
-  assert.equal(result.plan.integrations.length, 0, "no OMP bundle was updated, so OMP files are left alone");
+  assert.deepEqual(result.plan.integrations.filter((item) => !item.label.startsWith("command ")), [], "no OMP bundle was updated, so OMP files are left alone");
+  assert.equal(await readFile(path.join(w.home, ".local/bin/agent-vault"), "utf8"), launcherScript(w.paths.universal), "but the commands exist for any host");
   assert.deepEqual(await mcpConfig(w), { mcpServers: { other: { command: "x" } } });
   assert.equal(await readFile(path.join(w.paths.omp, "README"), "utf8"), "not ours\n");
   assert.match(result.plan.targets.find((item) => item.id === "omp").reason, /did not install/);
@@ -427,7 +428,7 @@ test("the update command prints a plan, applies with verification, lists backups
   assert.match(real.stdout, /Restart OMP/);
   assert.match(real.stdout, /1 journal notes are Markdown files in the vault/);
   assert.equal(await w.version(w.paths.omp), "1.0.0");
-  assert.equal(await readFile(path.join(w.home, ".local/bin/vault-cli"), "utf8"), launcherScript(w.paths.omp), "the update installs a launcher for the OMP bundle");
+  assert.equal(await readFile(path.join(w.home, ".local/bin/vault-cli"), "utf8"), launcherScript(w.paths.universal), "the update installs a launcher for the shared bundle");
   assert.match(real.stdout, /\.local\/bin is not on your PATH/, "tells the user when the launcher is not on PATH");
 
   const listed = JSON.parse((await run("--backups", "--json")).stdout);
@@ -802,7 +803,7 @@ test("printed commands use the short launcher name only when that launcher runs 
   assert.match(text, new RegExp(`apply exactly this plan: agent-vault update --from '${source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}' --expect ${own.plan.id}$`, "m"));
   assert.equal(summarizeUpdate(own).applyCommand, `agent-vault update --expect ${own.plan.id}`);
 
-  await writeFile(path.join(bin, "vault-cli"), launcherScript(w.paths.omp));
+  await writeFile(path.join(bin, "vault-cli"), launcherScript(w.paths.universal));
   const applied = await w.update({ from: source, expect: own.plan.id, env: { ...process.env, PATH: bin } });
   assert.match(summarizeUpdate(applied).applied.rollbackCommand, /^vault-cli update --rollback \d{8}-/, "after the update the installed CLI is the new one, and its launcher is named");
 });
@@ -834,4 +835,22 @@ test("a confirm hook decides after the plan is shown: declining installs nothing
   const asked = [];
   await w.update({ from: source, confirm: async () => { asked.push(1); return true; } });
   assert.deepEqual(asked, [], "nothing to ask when the build is already current");
+});
+
+test("a host without OMP gets the commands from an update too, and rollback removes them", async (t) => {
+  const w = await world(t, { installed: "0.9.0", targets: ["universal"] });
+  await rm(path.join(w.home, ".local"), { recursive: true, force: true }); // installed before launchers existed
+  assert.equal(existsSync(w.paths.omp), false, "no OMP bundle at all");
+  const source = await w.bundle("1.0.0");
+  const dry = await w.update({ from: source, dryRun: true });
+  assert.deepEqual(dry.plan.integrations.map((item) => [item.label, item.status]), [["command agent-vault", "installed"], ["command vault-cli", "installed"]]);
+  const applied = await w.update({ from: source, env: { ...process.env, PATH: "/usr/bin" } });
+  assert.deepEqual(applied.applied.integrations.map((item) => item.label), ["command agent-vault", "command vault-cli"]);
+  assert.equal(await readFile(path.join(w.home, ".local/bin/agent-vault"), "utf8"), launcherScript(w.paths.universal));
+  assert.equal(existsSync(w.paths.mcp), false, "no OMP file is written for a host that is not OMP");
+  assert.equal(existsSync(w.paths.recorder), false);
+  assert.match(applied.notes.join("\n"), /\.local\/bin is not on your PATH/);
+  await rollbackUpdate({ home: w.home, id: applied.applied.id });
+  assert.equal(existsSync(path.join(w.home, ".local/bin/agent-vault")), false);
+  assert.equal(await w.version(w.paths.universal), "0.9.0");
 });

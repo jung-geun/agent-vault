@@ -56,6 +56,7 @@
     "lib/tag-aliases.mjs",
     "lib/vault-core.mjs",
     "lib/vault-tidy.mjs",
+    "lib/updater.mjs",
     "integrations/omp/agent-vault-recorder.ts",
     "integrations/omp/agent-vault.rule.md",
     "integrations/obsidian/agent-vault-reading.css",

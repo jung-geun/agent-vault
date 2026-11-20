@@ -46,6 +46,8 @@ Usage:
   vault-cli migrate --from-wiki <path> [--profile-source <relative-file>] [--path <path>]
   vault-cli migrate --from-repo <path> [--project <id>] [--path <path>]
   vault-cli install [--interactive] [--global | --local | --obsidian] [--agents omp,claude,universal,cursor] [--method copy|symlink]
+  vault-cli update [--from <directory> | --archive <file|https-url>] [--ref <branch|tag|commit>] [--local] [--dry-run] [--no-verify] [--allow-downgrade] [--json]
+  vault-cli update --backups | --rollback <backupId|latest>
 
 Options:
   --path <path>            Target Obsidian vault path (default: ~/.vault)
@@ -526,6 +528,38 @@ try {
         } else console.log(`[OK] ${integration.label} ${integration.status}: ${integration.path}`);
       }
       for (const note of result.notes) console.log(`[INFO] ${note}`);
+      break;
+    }
+
+    case "update": {
+      const flags = commandFlags(1, ["--path", "--from", "--archive", "--ref", "--rollback"], ["--local", "--dry-run", "--no-verify", "--allow-downgrade", "--backups", "--json"]);
+      const updater = await import("../lib/updater.mjs");
+      const show = (value, text) => console.log(flags["--json"] ? JSON.stringify(value, null, 2) : text);
+      const sourceFlags = ["--from", "--archive", "--ref", "--dry-run", "--no-verify", "--allow-downgrade"].filter((name) => flags[name] !== undefined);
+      if ((flags["--backups"] || flags["--rollback"] !== undefined) && (sourceFlags.length || flags["--local"])) throw new Error(`--backups and --rollback cannot be combined with ${[...sourceFlags, ...(flags["--local"] ? ["--local"] : [])].join(", ")}.`);
+      if (flags["--backups"] && flags["--rollback"] !== undefined) throw new Error("Choose --backups or --rollback, not both.");
+      if (flags["--ref"] !== undefined && (flags["--from"] !== undefined || flags["--archive"] !== undefined)) throw new Error("--ref only applies to the GitHub download; it cannot be combined with --from or --archive.");
+      if (flags["--backups"]) {
+        const backups = await updater.listUpdateBackups();
+        show(backups.map(({ manifest, ...item }) => item), backups.length ? backups.map((item) => `${item.id}  ${Object.entries(item.from).map(([id, version]) => `${id} ${version ?? "?"}`).join(", ")} -> ${item.to}${item.rolledBack ? "  (rolled back)" : ""}`).join("\n") : "No update backups.");
+        break;
+      }
+      if (flags["--rollback"] !== undefined) {
+        const result = await updater.rollbackUpdate({ id: flags["--rollback"] });
+        show(result, [
+          `Rolled back update ${result.id}: ${result.from} -> ${Object.values(result.to).join(", ")}.`,
+          ...result.restored.map((item) => `  restored ${item}`),
+          ...result.skipped.map((item) => `  [WARN] left ${item.path}: ${item.reason}`),
+          "[INFO] Restart OMP and any other host that launched Agent Vault.",
+        ].join("\n"));
+        break;
+      }
+      const result = await updater.runUpdate({
+        from: flags["--from"], archive: flags["--archive"], ref: flags["--ref"],
+        scope: flags["--local"] ? "local" : "global", dryRun: Boolean(flags["--dry-run"]),
+        verify: !flags["--no-verify"], allowDowngrade: Boolean(flags["--allow-downgrade"]), vault: targetVaultPath,
+      });
+      show(result, updater.renderUpdate(result, { dryRun: Boolean(flags["--dry-run"]) }));
       break;
     }
 

@@ -252,7 +252,7 @@ Weekly Markdown (`projects/<id>/weekly/YYYY-WW.md`, `shared/knowledge/weekly/`) 
 | Tool | Does | Timing |
 | --- | --- | --- |
 | `stats` | Counts by scope, kind and status; review queue (pending, ready, staged, failed); active tasks with owner liveness; weekly coverage; effective settings. Optionally narrowed to one project. | Read, uncounted |
-| `diagnose` | Health checks, each with a concrete fix: Node version, settings validity, database integrity (`quick_check`), project resolution, orphaned tasks, failed review actions, recall coverage, guard and team state. Reports hook status as `info` because a server cannot see host config; use `vault-cli hooks status`. Never repairs anything. | Read, uncounted |
+| `diagnose` | Health checks, each with a concrete fix: Node version, settings validity, database integrity (`quick_check`), project resolution, orphaned tasks, failed review actions, recall coverage, guard and team state, and whether an installed bundle is older than the running build (section 13.6). Reports hook status as `info` because a server cannot see host config; use `vault-cli hooks status`. Never repairs anything. | Read, uncounted |
 | `tidy` | Read-only audit of tags and links in the Markdown notes (section 12), and with `plan` a preview of a cleanup that names the exact `vault-cli tidy --apply` command for the user to run. Never edits a note. Records the audit time in `.agent-vault/tidy.json` for the `diagnose` reminder. | Read, uncounted |
 
 CLI equivalents: `vault-cli memory stats|diagnose|recall`, and `vault-cli tidy` (audit, `--plan`, `--apply`, `--backups`, `--undo`).
@@ -438,7 +438,7 @@ Only wikilinks in editable notes are rewritten. Markdown links, links in read-on
 
 - edits only editable notes, re-checking every path with the `doc_write` rule and refusing symlinks, paths outside the vault and non-Markdown files, even if a hand-written plan names them;
 - refuses any note whose SHA-256 differs from the plan, and verifies that each tag list and link still matches before writing;
-- keeps the list style (inline, block, quoted only when every item was quoted), the line endings and every other byte of the note, and leaves `updated` untouched;
+- keeps the line endings and every other byte of the note, the list style (inline or block) and each tag's own quoting, so `"2024-01-01"` never becomes a YAML date; a tag that was not in the list is written bare only when it starts with a letter, is not a YAML keyword and does not end in `:` or `.`; `updated` is left untouched;
 - copies each original to `.agent-vault/tidy-backups/<id>/` (the ten newest are kept) before writing, and logs each file in a manifest;
 - never rewrites inline `#tags`; it lists the ones that still use a merged or dropped spelling.
 
@@ -457,3 +457,46 @@ Every audit records its time and counts in `.agent-vault/tidy.json`. `diagnose` 
 - Frontmatter lists and wikilinks are rewritten; inline tags, Markdown links and read-only notes are not.
 - Typo, overlap and co-occurrence findings are heuristics. They never apply without an explicit option.
 - Measured once on one machine, an audit of a vault with roughly 11 000 notes took about two seconds. An audit run through the CLI or the `tidy` tool writes only `.agent-vault/tidy.json`; `--plan` writes nothing; the audit function itself is read-only.
+
+## 13. Updating the installed build
+
+Hosts launch the copy that `vault-cli install` made: `~/.omp/agent/skills/agent-vault` for OMP, `~/.agents/skills/agent-vault` for Codex and other agents (Claude Code's folder usually links to it). That copy never changes by itself, so a host keeps running an old build after the source moves on. `vault-cli update` brings it up to date.
+
+### 13.1 Sources
+
+| Option | Source |
+| --- | --- |
+| `--from <directory>` | A checkout or unpacked bundle |
+| `--archive <file or URL>` | A `.tar.gz` of the repository. A URL must use https (plain http only for loopback) and may not exceed 64 MiB |
+| none, optionally `--ref <branch\|tag\|commit>` (default `main`) | The GitHub archive of `jung-geun/agent-vault`. A token from `GH_TOKEN`, `GITHUB_TOKEN` or `gh auth token` is tried first and is only sent to `api.github.com`; the public archive is the fallback. `AGENT_VAULT_ARCHIVE_URL` acts like `--archive` |
+
+A source is used only after it is checked: package name `agent-vault-skill`, a semantic version, the CLI, the server, `SKILL.md` and the OMP files present, and no links inside `bin`, `lib` or `integrations`. Downloads go to a temporary folder that is always removed. Extraction needs the `tar` command.
+
+### 13.2 What changes
+
+- Every installed bundle that is a real folder owned by Agent Vault. A link follows the bundle it points to. A folder Agent Vault did not install is skipped, and nothing new is installed (use `vault-cli install`). `--local` works on the project's folders instead of the home ones.
+- For a global OMP install: the user rule (only if it is a known earlier version), the MCP entry (custom `env` and other servers are kept) and the recorder (only while it still carries its managed marker). Anything else there is reported as preserved.
+- Files that an older bundle had and the new one does not are left in place.
+- A source older than what is installed is refused unless `--allow-downgrade`. When nothing differs the command reports that and changes nothing. `--dry-run` prints the plan, including per-folder counts of changed, new and unchanged files, and writes nothing.
+
+### 13.3 Backup and verification
+
+Before writing, the replaced bundles, the rule and recorder files, and the `agent-vault` MCP entry are copied to `~/.agent-vault/update-backups/<id>/` (the three newest backups are kept). After writing, the installed server is started in a scratch home and vault, with every `AGENT_VAULT_*` variable and `OMP_VAULT_PATH` removed so it cannot reach the real vault or database. It must answer `initialize` with the new version and list at least one tool. If it does not, or any step fails, the previous build is restored automatically and the command fails. `--no-verify` skips the check.
+
+### 13.4 Rollback
+
+`vault-cli update --backups` lists backups, `--rollback <id|latest>` restores one: the bundles, and the rule, recorder and MCP entry only if each is still as the update left it. Anything edited since is left alone and reported. A backup can be rolled back once.
+
+### 13.5 After an update
+
+Running hosts keep the old code until restarted, and the command says so. When the vault still holds journal Markdown (`worktrees`, `logs`, `long-term`), it prints their number and the `vault-cli memory migrate --project <id>` command that imports them; it never runs the import or `--prune-legacy`.
+
+### 13.6 Detection
+
+`diagnose` reports `install` as `info` when an installed bundle's version is lower than the build that is running, with the fix `vault-cli update --dry-run`. It compares versions only and makes no network request.
+
+### 13.7 Limits
+
+- Only OMP's rule, MCP entry and recorder are managed. Claude Code and Codex hooks are separate (`vault-cli hooks install`), as is registering the server in other hosts.
+- Verification proves the installed server boots and answers; it does not prove a host's behavior.
+- The default source is `main`, which can be ahead of the latest tag; pass `--ref <tag>` for a release.

@@ -97,6 +97,25 @@ test("frontmatter tags are read and rewritten in their own style without touchin
   assert.match(writeFrontmatterTags("---\ntags: [a]\n---\n", readFrontmatterTags("---\ntags: [a]\n---\n"), ["2026", "true", "a:b", "한글"]), /tags: \["2026", "true", a:b, 한글\]/);
 });
 
+test("a rewrite never turns a quoted tag into a YAML date, number, hex, float or mapping key", () => {
+  const rewrite = (line, drop, block = false) => {
+    const text = block ? `---\ntags:\n${line}\n---\nbody\n` : `---\n${line}\n---\nbody\n`;
+    const info = readFrontmatterTags(text);
+    return writeFrontmatterTags(text, info, info.tags.filter((tag) => !drop.includes(tag)));
+  };
+  for (const quoted of ["2024-01-01", "1e3", "0x1f", ".5", "foo:", "007", "true", "null"]) {
+    assert.equal(rewrite(`tags: ["${quoted}", foo, Foo]`, ["Foo"]), `---\ntags: ["${quoted}", foo]\n---\nbody\n`, quoted);
+    assert.equal(rewrite(`tags: ['${quoted}', foo, Foo]`, ["Foo"]), `---\ntags: ['${quoted}', foo]\n---\nbody\n`, `${quoted} single`);
+    assert.equal(rewrite(`  - "${quoted}"\n  - foo\n  - Foo`, ["Foo"], true), `---\ntags:\n  - "${quoted}"\n  - foo\n---\nbody\n`, `${quoted} block`);
+  }
+  assert.equal(rewrite("tags: [2024-01-01, foo, Foo]", ["Foo"]), "---\ntags: [2024-01-01, foo]\n---\nbody\n", "an item that was bare stays exactly as written");
+  // A tag that was not in the list (a merge target) is quoted whenever YAML could read it as another type.
+  const info = readFrontmatterTags("---\ntags: [foo]\n---\n");
+  const written = (tag) => writeFrontmatterTags("---\ntags: [foo]\n---\n", info, [tag]).split("\n")[1];
+  for (const tag of ["2024-01-01", "1e3", "0x1f", ".5", "foo:", "true", "x."]) assert.equal(written(tag), `tags: ["${tag}"]`, tag);
+  for (const tag of ["ok-tag", "v1.2", "Ünï", "a/b", "ticket:1", "source:abc"]) assert.equal(written(tag), `tags: [${tag}]`, tag);
+});
+
 test("code is masked, inline tags skip headings, numbers and code, and links keep their exact offsets", () => {
   const text = "# Heading #notatag\nreal #tag-one and #Tag/Nested but not #123 or word#fragment\n```js\n#fence [[ghost]]\n```\n`#span [[spanlink]]` then [[real|alias]] ![[embed#h]]\n";
   const masked = maskCode(text);

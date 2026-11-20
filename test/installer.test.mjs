@@ -6,7 +6,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { findLauncher, getInstallTargets, installAgents, installManagedFile, installRule, installSkillFiles, launcherOnPath, launcherScript, previewInstallAgents, recommendedInstallMethod, registerMcpServer, RECORDER_MARKER } from "../lib/installer.mjs";
+import { findLauncher, getInstallTargets, installAgents, installManagedFile, installRule, installSkillFiles, launcherOnPath, launcherScript, previewInstallAgents, recommendedInstallMethod, registerMcpServer, RECORDER_MARKER, UPDATE_COMMAND_MARKER } from "../lib/installer.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "agent-vault-targets-"));
@@ -23,6 +23,7 @@ async function fixture(t) {
   await writeFile(path.join(sourceDir, "lib/installer.mjs"), "// bundled library\n");
   await writeFile(path.join(sourceDir, "integrations/omp/agent-vault.rule.md"), "# Bundled rule\n");
   await writeFile(path.join(sourceDir, "integrations/omp/agent-vault-recorder.ts"), `${RECORDER_MARKER}\n// recorder\n`);
+  await writeFile(path.join(sourceDir, "integrations/omp/agent-vault-update.ts"), `${UPDATE_COMMAND_MARKER}\n// update command\n`);
   return { root, sourceDir, home, cwd };
 }
 
@@ -88,7 +89,8 @@ test("global OMP installs integrations and preserves unrelated MCP settings", as
   await mkdir(path.dirname(config), { recursive: true });
   await writeFile(config, JSON.stringify({ other: true, mcpServers: { unrelated: { command: "keep" } } }));
   const result = await installAgents(options);
-  assert.equal(result.integrations.length, 5);
+  assert.equal(result.integrations.length, 6);
+  assert.match(await readFile(path.join(options.home, ".omp/agent/extensions/agent-vault-update.ts"), "utf8"), /managed by agent-vault/);
   const launcherPath = path.join(options.home, ".local/bin/agent-vault");
   const bundle = path.join(options.home, ".agents/skills/agent-vault");
   assert.equal(await readFile(launcherPath, "utf8"), launcherScript(bundle), "the launcher runs the shared universal bundle");
@@ -257,7 +259,7 @@ test("default global copy converts owned canonical links and refreshes OMP integ
   assert.equal(result.method, "copy");
   assert.equal((await lstat(omp)).isSymbolicLink(), false);
   assert.equal((await lstat(omp)).isDirectory(), true);
-  assert.equal(result.integrations.length, 5);
+  assert.equal(result.integrations.length, 6);
   assert.equal(JSON.parse(await readFile(configPath, "utf8")).mcpServers["agent-vault"].command, "node");
   assert.equal(await readFile(path.join(options.home, ".omp/agent/extensions/agent-vault-recorder.ts"), "utf8"), updatedRecorder);
   await writeFile(path.join(omp, "SKILL.md"), "Independent copy\n");
@@ -361,7 +363,7 @@ test("Copy preview matches conversion of a dangling OMP link when Universal will
   const plan = { ...options, method: "copy" };
   const preview = await previewInstallAgents(plan);
   assert.equal(preview.targets.find(({ id }) => id === "omp").status, "installed");
-  assert.equal(preview.integrations.length, 5);
+  assert.equal(preview.integrations.length, 6);
   await absent(canonical);
   assert.equal((await lstat(omp)).isSymbolicLink(), true);
   assert.deepEqual(await installAgents(plan), preview);

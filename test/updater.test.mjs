@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { RECORDER_MARKER, installAgents, launcherScript } from "../lib/installer.mjs";
+import { RECORDER_MARKER, UPDATE_COMMAND_MARKER, installAgents, launcherScript } from "../lib/installer.mjs";
 import { initVault } from "../lib/vault-core.mjs";
 import { closeMemoryDbs } from "../lib/memory-db.mjs";
 import { diagnoseMemory } from "../lib/memory-inspect.mjs";
@@ -52,6 +52,7 @@ async function makeBundle(dir, { version, mode = "ok", note = "" }) {
   await put("lib/module.mjs", `export const version = "${version}";\n`);
   await put("integrations/omp/agent-vault.rule.md", "rule\n");
   await put("integrations/omp/agent-vault-recorder.ts", `${RECORDER_MARKER} Do not edit in place.\n// recorder ${version}${note}\n`);
+  await put("integrations/omp/agent-vault-update.ts", `${UPDATE_COMMAND_MARKER} Do not edit in place.\n// update command ${version}${note}\n`);
   return dir;
 }
 

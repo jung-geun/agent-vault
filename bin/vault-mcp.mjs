@@ -18,7 +18,7 @@ import { auditVault, planTidy, recordTidyAudit, tidyApplyCommand } from "../lib/
 import { runUpdate, summarizeUpdate } from "../lib/updater.mjs";
 
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const SERVER_INFO = { name: "agent-vault", version: "1.2.0" };
+const SERVER_INFO = { name: "agent-vault", version: "1.3.0" };
 const MAX_RESULT_CHARS = 60_000;
 
 export const INSTRUCTIONS = [

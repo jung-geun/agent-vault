@@ -9,11 +9,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { RECORDER_MARKER, installAgents } from "../lib/installer.mjs";
+import { RECORDER_MARKER, installAgents, launcherScript } from "../lib/installer.mjs";
 import { initVault } from "../lib/vault-core.mjs";
 import { closeMemoryDbs } from "../lib/memory-db.mjs";
 import { diagnoseMemory } from "../lib/memory-inspect.mjs";
-import { RETIRED_TOOL_NAMES, compareVersions, findRetiredToolReferences, githubArchiveRequest, listUpdateBackups, renderUpdate, rollbackUpdate, runUpdate, smokeTest, UPDATE_BACKUPS_KEPT } from "../lib/updater.mjs";
+import { RETIRED_TOOL_NAMES, compareVersions, findRetiredToolReferences, githubArchiveRequest, listUpdateBackups, renderUpdate, rollbackUpdate, runUpdate, smokeTest, summarizeUpdate, UPDATE_BACKUPS_KEPT } from "../lib/updater.mjs";
 
 const exec = promisify(execFile);
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -390,7 +390,7 @@ test("diagnose says when the installed bundle is older than the running build", 
   const report = await find(older.home);
   assert.equal(report.status, "info");
   assert.match(report.detail, /omp 0\.9\.0/);
-  assert.match(report.fix, /node '[^']+\/bin\/vault-cli\.mjs' update --from '[^']+' --dry-run/, "a command that works as written, because vault-cli is not on PATH");
+  assert.match(report.fix, /node '[^']+\/bin\/vault-cli\.mjs' update --from '[^']+'\. It shows what changes and asks before installing/, "a command that works as written, because vault-cli may not be on PATH yet");
 
   const newer = await world(t, { installed: "99.0.0" });
   assert.equal(await find(newer.home), undefined, "an install newer than this build is not reported");
@@ -400,6 +400,7 @@ test("diagnose says when the installed bundle is older than the running build", 
 
 test("the update command prints a plan, applies with verification, lists backups, rolls back, and rejects misuse", async (t) => {
   const w = await world(t);
+  await rm(path.join(w.home, ".local"), { recursive: true, force: true }); // an install from before launchers existed
   const vault = path.join(w.root, "vault");
   await initVault(vault);
   await mkdir(path.join(vault, "projects/demo/worktrees/main"), { recursive: true });
@@ -414,13 +415,20 @@ test("the update command prints a plan, applies with verification, lists backups
   assert.match(dry.stdout, /Dry run: nothing was changed/);
   assert.equal(await w.version(w.paths.omp), "0.9.0");
 
-  const real = await run("--from", source, "--path", vault);
+  const noConsent = await run("--from", source, "--path", vault);
+  assert.equal(noConsent.code, 0, noConsent.stderr);
+  assert.match(noConsent.stdout, /No terminal to ask on, so nothing was applied\. Run the same command with --yes/);
+  assert.equal(await w.version(w.paths.omp), "0.9.0", "without --yes and without a terminal nothing is installed");
+
+  const real = await run("--from", source, "--yes", "--path", vault);
   assert.equal(real.code, 0, real.stderr);
   assert.match(real.stdout, /Updated\. Backup \d{8}-\d{6}-\d{3}-[0-9a-f]{6}; undo with: node '[^']+\/bin\/vault-cli\.mjs' update --rollback \d{8}-\d{6}-\d{3}-[0-9a-f]{6}/);
   assert.match(real.stdout, /Verified: the installed server answered as version 1\.0\.0 with 1 tools/);
   assert.match(real.stdout, /Restart OMP/);
   assert.match(real.stdout, /1 journal notes are Markdown files in the vault/);
   assert.equal(await w.version(w.paths.omp), "1.0.0");
+  assert.equal(await readFile(path.join(w.home, ".local/bin/vault-cli"), "utf8"), launcherScript(w.paths.omp), "the update installs a launcher for the OMP bundle");
+  assert.match(real.stdout, /\.local\/bin is not on your PATH/, "tells the user when the launcher is not on PATH");
 
   const listed = JSON.parse((await run("--backups", "--json")).stdout);
   assert.equal(listed.length, 1);
@@ -431,6 +439,7 @@ test("the update command prints a plan, applies with verification, lists backups
   assert.equal(back.code, 0, back.stderr);
   assert.match(back.stdout, /Rolled back update/);
   assert.equal(await w.version(w.paths.omp), "0.9.0");
+  assert.equal(existsSync(path.join(w.home, ".local/bin/agent-vault")), false, "rollback removes the launcher the update created");
   assert.match((await run("--backups")).stdout, /\(rolled back\)/);
 
   for (const [args, pattern] of [
@@ -772,3 +781,57 @@ test("the printed command runs the CLI that made the plan, so it works even when
   assert.equal(await w.version(w.paths.omp), "9.0.0");
 });
 
+
+test("printed commands use the short launcher name only when that launcher runs the very CLI that made the plan", async (t) => {
+  const w = await world(t);
+  const source = await w.bundle("1.0.0");
+  const bin = path.join(w.root, "launchers");
+  await mkdir(bin);
+  const dry = (env) => w.update({ from: source, dryRun: true, env: { ...process.env, ...env } });
+
+  const bare = await dry({ PATH: bin });
+  assert.match(renderUpdate(bare, { dryRun: true, source: { from: source } }), /^Plan [0-9a-f]{12}\. To apply exactly this plan: node '[^']+\/bin\/vault-cli\.mjs' update --from /m, "no launcher: the full node command");
+
+  await writeFile(path.join(bin, "agent-vault"), launcherScript(path.join(w.root, "some-other-bundle")));
+  const other = await dry({ PATH: bin });
+  assert.match(renderUpdate(other, { dryRun: true, source: { from: source } }), /apply exactly this plan: node '/, "a launcher for another bundle is not used");
+
+  await writeFile(path.join(bin, "agent-vault"), launcherScript(ROOT));
+  const own = await dry({ PATH: bin });
+  const text = renderUpdate(own, { dryRun: true, source: { from: source } });
+  assert.match(text, new RegExp(`apply exactly this plan: agent-vault update --from '${source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}' --expect ${own.plan.id}$`, "m"));
+  assert.equal(summarizeUpdate(own).applyCommand, `agent-vault update --expect ${own.plan.id}`);
+
+  await writeFile(path.join(bin, "vault-cli"), launcherScript(w.paths.omp));
+  const applied = await w.update({ from: source, expect: own.plan.id, env: { ...process.env, PATH: bin } });
+  assert.match(summarizeUpdate(applied).applied.rollbackCommand, /^vault-cli update --rollback \d{8}-/, "after the update the installed CLI is the new one, and its launcher is named");
+});
+
+test("a file the user already keeps at ~/.local/bin/agent-vault is never overwritten, even by a real update", async (t) => {
+  const w = await world(t);
+  const mine = path.join(w.home, ".local/bin/agent-vault");
+  await writeFile(mine, "#!/bin/sh\necho mine\n");
+  const source = await w.bundle("1.0.0");
+  const applied = await w.update({ from: source });
+  assert.equal(applied.plan.integrations.find((item) => item.label === "command agent-vault").status, "preserved existing file with different content");
+  assert.equal(await readFile(mine, "utf8"), "#!/bin/sh\necho mine\n", "the user's file is untouched");
+  assert.equal(await w.version(w.paths.omp), "1.0.0", "the rest of the update still happens");
+  assert.equal(await w.update({ from: source, dryRun: true }).then((result) => result.plan.current), true, "a preserved file does not keep the plan from being current");
+});
+
+test("a confirm hook decides after the plan is shown: declining installs nothing, accepting installs exactly the plan it was shown", async (t) => {
+  const w = await world(t);
+  const source = await w.bundle("1.0.0");
+  const before = await snapshot(w.home);
+  let shown;
+  const declined = await w.update({ from: source, confirm: async (plan) => { shown = plan; return false; } });
+  assert.equal(declined.declined, true);
+  assert.equal(declined.applied, null);
+  assert.deepEqual(await snapshot(w.home), before, "declining changes nothing");
+  const accepted = await w.update({ from: source, confirm: async (plan) => { assert.equal(plan.id, shown.id, "the same plan"); return true; } });
+  assert.ok(accepted.applied.id);
+  assert.equal(await w.version(w.paths.omp), "1.0.0");
+  const asked = [];
+  await w.update({ from: source, confirm: async () => { asked.push(1); return true; } });
+  assert.deepEqual(asked, [], "nothing to ask when the build is already current");
+});

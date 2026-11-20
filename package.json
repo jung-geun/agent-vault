@@ -3,6 +3,10 @@
   "version": "1.2.0",
   "description": "Evidence-driven agent memory with SQLite or SQL servers, MCP tools, task-boundary review, and an interactive skill installer",
   "type": "module",
+  "bin": {
+    "agent-vault": "bin/vault-cli.mjs",
+    "vault-cli": "bin/vault-cli.mjs"
+  },
   "license": "UNLICENSED",
   "repository": {
     "type": "git",

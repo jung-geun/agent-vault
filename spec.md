@@ -497,7 +497,7 @@ Running hosts keep the old code until restarted, and the command says so. When t
 
 ### 13.6 Detection
 
-`diagnose` reports `install` as `info` when an installed bundle's version is lower than the build that is running, with the fix `vault-cli update --dry-run`. It compares versions only and makes no network request. It also reports `instructions` as `info` for any of the files in section 13.2 that still name a retired tool.
+`diagnose` reports `install` as `info` when an installed bundle's version is lower than the build that is running, with the fix `node '<this build>/bin/vault-cli.mjs' update --from '<this build>'`. It compares versions only and makes no network request. It also reports `instructions` as `info` for any of the files in section 13.2 that still name a retired tool.
 
 ### 13.7 Limits
 
@@ -507,7 +507,11 @@ Running hosts keep the old code until restarted, and the command says so. When t
 
 ### 13.8 Running it
 
-`vault-cli` is not on `PATH`, so every command the tool prints names a CLI by absolute path: the one that produced the plan, never merely the installed copy. The installed copy is older than the source by definition and may not know flags such as `--expect` or `--allow-same-version`. From a checkout the printed command is therefore `node /path/to/agent-vault/bin/vault-cli.mjs update --from /path/to/agent-vault …`; the tool, which runs from the installed bundle, names that bundle's CLI. A dry run ends with `Plan <id>` and the exact command that applies that plan (`--expect <id>`); copying and running it installs only what was previewed and fails with `plan_changed` if the source or the installed files changed in between. Only the rollback command names the installed CLI, because after the update it is the new one.
+Applying needs consent. `vault-cli update` (or `agent-vault update`) fetches the source, shows the plan and asks `Apply this update? [y/N]`; the answer applies exactly the plan that was shown, from one download. `--yes` applies without asking and `--expect <planId>` applies only the plan with that id. Without a terminal, and without `--yes` or `--expect`, the command prints the plan and changes nothing. `--dry-run` never applies.
+
+The installer and every update put two launchers, `agent-vault` and `vault-cli`, in `~/.local/bin`. Each is a three-line POSIX shell script that runs the CLI of the installed OMP bundle, so the command needs no path. A file that already sits there and is not one of these launchers (they carry a marker line) is never overwritten and is reported as preserved. `update` says when `~/.local/bin` is not on `PATH`; installing with npm instead (`bin` in `package.json`) provides both names through npm's own mechanism. The launchers are part of the plan, so they are backed up and removed again by `--rollback`.
+
+Every command the tool prints names a CLI that understands the plan: the short `agent-vault` when a launcher on `PATH` runs this very CLI, otherwise `node '<absolute path>' …`, never merely the installed copy, which is older than the source by definition and may not know flags such as `--expect` or `--allow-same-version`. From a checkout, before launchers exist, that is `node /path/to/agent-vault/bin/vault-cli.mjs update --from /path/to/agent-vault`. A dry run ends with `Plan <id>` and the exact command that applies that plan (`--expect <id>`); running it installs only what was previewed and fails with `plan_changed` if the source or the installed files changed in between. The rollback command names the installed CLI (the launcher when there is one), because after the update that CLI is the new one.
 
 The default source is `main`, which can lag behind a local build. A source whose version equals the installed one but whose files differ is therefore refused (`same_version_differs`), because it may be older; `--allow-same-version` installs it anyway, and a lower version needs `--allow-downgrade`.
 

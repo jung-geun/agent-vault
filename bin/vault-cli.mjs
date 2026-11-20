@@ -46,7 +46,8 @@ Usage:
   vault-cli migrate --from-wiki <path> [--profile-source <relative-file>] [--path <path>]
   vault-cli migrate --from-repo <path> [--project <id>] [--path <path>]
   vault-cli install [--interactive] [--global | --local | --obsidian] [--agents omp,claude,universal,cursor] [--method copy|symlink]
-  vault-cli update [--from <directory> | --archive <file|https-url>] [--ref <branch|tag|commit>] [--local] [--dry-run] [--expect <planId>] [--no-verify] [--allow-downgrade] [--allow-same-version] [--json]
+  vault-cli update                      (also: agent-vault update) show what would change, ask, then update from the GitHub 'main' archive
+  vault-cli update [--yes] [--from <directory> | --archive <file|https-url>] [--ref <branch|tag|commit>] [--local] [--dry-run] [--expect <planId>] [--no-verify] [--allow-downgrade] [--allow-same-version] [--json]
   vault-cli update --backups | --rollback <backupId|latest>
 
 Options:
@@ -532,10 +533,10 @@ try {
     }
 
     case "update": {
-      const flags = commandFlags(1, ["--path", "--from", "--archive", "--ref", "--rollback", "--expect"], ["--local", "--dry-run", "--no-verify", "--allow-downgrade", "--allow-same-version", "--backups", "--json"]);
+      const flags = commandFlags(1, ["--path", "--from", "--archive", "--ref", "--rollback", "--expect"], ["--local", "--dry-run", "--no-verify", "--allow-downgrade", "--allow-same-version", "--backups", "--json", "--yes"]);
       const updater = await import("../lib/updater.mjs");
       const show = (value, text) => console.log(flags["--json"] ? JSON.stringify(value, null, 2) : text);
-      const sourceFlags = ["--from", "--archive", "--ref", "--dry-run", "--no-verify", "--allow-downgrade", "--allow-same-version", "--expect"].filter((name) => flags[name] !== undefined);
+      const sourceFlags = ["--from", "--archive", "--ref", "--dry-run", "--no-verify", "--allow-downgrade", "--allow-same-version", "--expect", "--yes"].filter((name) => flags[name] !== undefined);
       if ((flags["--backups"] || flags["--rollback"] !== undefined) && (sourceFlags.length || flags["--local"])) throw new Error(`--backups and --rollback cannot be combined with ${[...sourceFlags, ...(flags["--local"] ? ["--local"] : [])].join(", ")}.`);
       if (flags["--backups"] && flags["--rollback"] !== undefined) throw new Error("Choose --backups or --rollback, not both.");
       if (flags["--ref"] !== undefined && (flags["--from"] !== undefined || flags["--archive"] !== undefined)) throw new Error("--ref only applies to the GitHub download; it cannot be combined with --from or --archive.");
@@ -555,12 +556,27 @@ try {
         ].join("\n"));
         break;
       }
+      const source = { from: flags["--from"], archive: flags["--archive"], ref: flags["--ref"], scope: flags["--local"] ? "local" : "global", allowDowngrade: Boolean(flags["--allow-downgrade"]), allowSameVersion: Boolean(flags["--allow-same-version"]) };
+      // Applying needs consent: --yes, --expect <planId> (the plan the user already saw), or an answer at the prompt. Without a
+      // terminal to ask, show the plan and change nothing.
+      const consented = Boolean(flags["--yes"] || flags["--expect"] !== undefined);
+      const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && !flags["--json"]);
+      const previewOnly = Boolean(flags["--dry-run"]) || (!consented && !interactive);
+      const confirm = !consented && interactive ? async (plan) => {
+        console.log(updater.renderUpdate({ plan, applied: null, notes: [], launcher: {} }, { dryRun: true, preview: true, source }));
+        const { createInterface } = await import("node:readline/promises");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        try { return /^y(es)?$/i.test((await rl.question("Apply this update? [y/N] ")).trim()); }
+        finally { rl.close(); }
+      } : undefined;
       const result = await updater.runUpdate({
-        from: flags["--from"], archive: flags["--archive"], ref: flags["--ref"],
-        scope: flags["--local"] ? "local" : "global", dryRun: Boolean(flags["--dry-run"]), expect: flags["--expect"],
-        verify: !flags["--no-verify"], allowDowngrade: Boolean(flags["--allow-downgrade"]), allowSameVersion: Boolean(flags["--allow-same-version"]), vault: targetVaultPath,
+        ...source, dryRun: previewOnly, expect: flags["--expect"], confirm,
+        verify: !flags["--no-verify"], vault: targetVaultPath,
       });
-      show(result, updater.renderUpdate(result, { dryRun: Boolean(flags["--dry-run"]), source: { from: flags["--from"], archive: flags["--archive"], ref: flags["--ref"], scope: flags["--local"] ? "local" : "global", allowDowngrade: Boolean(flags["--allow-downgrade"]), allowSameVersion: Boolean(flags["--allow-same-version"]) } }));
+      const text = updater.renderUpdate(result, { dryRun: previewOnly, source });
+      if (flags["--json"]) show(result, text);
+      else if (result.declined) console.log("Cancelled: nothing was changed.");
+      else console.log(!flags["--dry-run"] && previewOnly && !result.plan.current ? `${text}\nNo terminal to ask on, so nothing was applied. Run the same command with --yes to apply it.` : text);
       break;
     }
 
